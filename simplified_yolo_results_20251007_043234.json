@@ -1,0 +1,154 @@
+{
+  "ADC0831_0-300x300.png": {
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0,
+          300,
+          300
+        ],
+        "confidence": 1.0,
+        "method": "fullimage"
+      }
+    ],
+    "texts": [
+      "0 JRRJABE? ADC 0831CCN"
+    ],
+    "best_text": "0 JRRJABE? ADC 0831CCN",
+    "confidence": 0.8,
+    "patterns": {
+      "manufacturer": null,
+      "part_number": "JRRJABE",
+      "date_code": null,
+      "lot_code": "0831CCN"
+    }
+  },
+  "Screenshot 2025-10-06 222749.png": {
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0,
+          487,
+          231
+        ],
+        "confidence": 1.0,
+        "method": "fullimage"
+      }
+    ],
+    "texts": [
+      "Cy8C29666-24PvXi 8 05 2007 CyP 60654 1"
+    ],
+    "best_text": "Cy8C29666-24PvXi 8 05 2007 CyP 60654 1",
+    "confidence": 0.8,
+    "patterns": {
+      "manufacturer": null,
+      "part_number": null,
+      "date_code": "2007",
+      "lot_code": null
+    }
+  },
+  "Screenshot 2025-10-06 222803.png": {
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0,
+          495,
+          231
+        ],
+        "confidence": 1.0,
+        "method": "fullimage"
+      }
+    ],
+    "texts": [
+      "Cy8c29666-24PVXI B 05 PHI 1025 CYP 634312"
+    ],
+    "best_text": "Cy8c29666-24PVXI B 05 PHI 1025 CYP 634312",
+    "confidence": 0.8,
+    "patterns": {
+      "manufacturer": null,
+      "part_number": "24PVXI",
+      "date_code": "1025",
+      "lot_code": null
+    }
+  },
+  "sn74hc595n-shift-register-cmos-logic-ic-integrated-circuit-3.jpg": {
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0,
+          710,
+          325
+        ],
+        "confidence": 1.0,
+        "method": "fullimage"
+      }
+    ],
+    "texts": [
+      "#52CXRZK E4 SN74HC59SN"
+    ],
+    "best_text": "#52CXRZK E4 SN74HC59SN",
+    "confidence": 0.8,
+    "patterns": {
+      "manufacturer": "Texas Instruments",
+      "part_number": "SN74HC",
+      "date_code": null,
+      "lot_code": null
+    }
+  },
+  "type1.jpg": {
+    "regions": [
+      {
+        "bbox": [
+          88,
+          15,
+          101,
+          42
+        ],
+        "confidence": 0.4499662220478058,
+        "method": "yolo"
+      },
+      {
+        "bbox": [
+          109,
+          16,
+          121,
+          42
+        ],
+        "confidence": 0.28551778197288513,
+        "method": "yolo"
+      }
+    ],
+    "texts": [],
+    "best_text": "",
+    "confidence": 0.0
+  },
+  "type2.jpg": {
+    "regions": [
+      {
+        "bbox": [
+          0,
+          0,
+          269,
+          269
+        ],
+        "confidence": 1.0,
+        "method": "fullimage"
+      }
+    ],
+    "texts": [
+      "Almel AI MEGA328P ZOAU 0723"
+    ],
+    "best_text": "Almel AI MEGA328P ZOAU 0723",
+    "confidence": 0.8,
+    "patterns": {
+      "manufacturer": "Atmel",
+      "part_number": "MEGA328P",
+      "date_code": "0723",
+      "lot_code": null
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "system": {
+    "name": "IC Authentication System",
+    "version": "1.0.0",
+    "cache_dir": "datasheet_cache",
+    "reports_dir": "reports",
+    "database": "ic_authentication.db"
+  },
+  "ocr": {
+    "default_method": "ensemble",
+    "tesseract_config": "--psm 6 --oem 3",
+    "confidence_threshold": 0.6,
+    "enable_easyocr": true,
+    "enable_paddleocr": true,
+    "enable_tesseract": true
+  },
+  "image_processing": {
+    "clahe_clip_limit": 3.0,
+    "clahe_tile_size": [8, 8],
+    "denoise_strength": 10,
+    "edge_threshold_low": 50,
+    "edge_threshold_high": 150,
+    "min_ic_area": 1000,
+    "max_ic_area_ratio": 0.8
+  },
+  "verification": {
+    "text_similarity_threshold": 80,
+    "date_code_validity_years": 10,
+    "quality_score_threshold": 60,
+    "confidence_weights": {
+      "part_number": 0.30,
+      "manufacturer": 0.20,
+      "date_code": 0.15,
+      "country": 0.10,
+      "print_quality": 0.15,
+      "marking_format": 0.10
+    },
+    "authenticity_thresholds": {
+      "high_confidence": 85,
+      "medium_confidence": 65,
+      "low_confidence": 0
+    }
+  },
+  "web_scraper": {
+    "cache_expiry_days": 30,
+    "timeout_seconds": 10,
+    "max_search_results": 5,
+    "datasheet_sources": [
+      "https://www.alldatasheet.com",
+      "https://www.datasheetcatalog.com",
+      "https://www.octopart.com"
+    ],
+    "manufacturer_sites": {
+      "Texas Instruments": "https://www.ti.com",
+      "STMicroelectronics": "https://www.st.com",
+      "Analog Devices": "https://www.analog.com",
+      "Maxim": "https://www.maximintegrated.com",
+      "NXP": "https://www.nxp.com",
+      "Microchip": "https://www.microchip.com",
+      "ON Semiconductor": "https://www.onsemi.com",
+      "Infineon": "https://www.infineon.com"
+    }
+  },
+  "gui": {
+    "window_width": 1600,
+    "window_height": 1000,
+    "theme": "Fusion",
+    "show_debug_by_default": true,
+    "auto_analyze": false,
+    "save_debug_images": false
+  },
+  "manufacturers": {
+    "patterns": {
+      "Texas Instruments": ["TI", "TEXAS INSTRUMENTS"],
+      "STMicroelectronics": ["ST", "STM", "STMICRO"],
+      "Analog Devices": ["AD", "ADI", "ANALOG"],
+      "Maxim": ["MAXIM", "MAX"],
+      "NXP": ["NXP", "PHILIPS"],
+      "Infineon": ["INFINEON", "IFX"],
+      "Microchip": ["MICROCHIP", "MCHP", "ATMEL"],
+      "ON Semiconductor": ["ON", "ONSEMI"],
+      "Renesas": ["RENESAS"],
+      "Cypress": ["CYPRESS", "CY"],
+      "Intel": ["INTEL"],
+      "Broadcom": ["BROADCOM", "AVAGO"]
+    }
+  },
+  "country_codes": {
+    "CHINA": ["CHINA", "CHN", "PRC"],
+    "TAIWAN": ["TAIWAN", "TWN", "ROC"],
+    "MALAYSIA": ["MALAYSIA", "MYS"],
+    "PHILIPPINES": ["PHILIPPINES", "PHL"],
+    "THAILAND": ["THAILAND", "THA"],
+    "KOREA": ["KOREA", "KOR"],
+    "JAPAN": ["JAPAN", "JPN"],
+    "USA": ["USA", "US"],
+    "GERMANY": ["GERMANY", "DEU"]
+  }
+}
