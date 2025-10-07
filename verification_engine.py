@@ -96,11 +96,20 @@ class VerificationEngine:
                 break
             else:
                 print(f"⚠️ No exact match for: {part_num}")
-                # Only try variations if OCR confidence is low (< 70%)
-                # This prevents false matches between similar IC variants
+                # Try variations if OCR confidence is low (< 50%) OR no datasheet found yet
+                # This helps correct OCR errors while minimizing false IC variant matches
                 ocr_confidence = extracted_data.get('confidence', 100)
-                if ocr_confidence < 0.70:  # Low confidence OCR
-                    print(f"   ℹ️ Low OCR confidence ({ocr_confidence:.0%}), trying limited variations...")
+                should_try_variations = (
+                    ocr_confidence < 0.50 or  # Low confidence OCR
+                    (not official_data and part_num == all_part_numbers[-1])  # Last part, still no datasheet
+                )
+                
+                if should_try_variations:
+                    if ocr_confidence < 0.50:
+                        print(f"   ℹ️ Low OCR confidence ({ocr_confidence:.0%}), trying limited variations...")
+                    else:
+                        print(f"   ℹ️ No datasheet found for any part, trying variations as fallback...")
+                    
                     # Generate only most likely variations (limit to 5 to avoid false matches)
                     variations = self._generate_limited_ocr_variations(part_num)
                     for variant in variations:
@@ -119,7 +128,7 @@ class VerificationEngine:
                     if matched_part_number:
                         break
                 else:
-                    print(f"   ℹ️ High OCR confidence ({ocr_confidence:.0%}), skipping variations to avoid false matches")
+                    print(f"   ℹ️ OCR confidence ({ocr_confidence:.0%}) acceptable, skipping variations to avoid false matches")
         
         has_official_data = official_data and official_data.get('found', False)
         
@@ -143,20 +152,30 @@ class VerificationEngine:
             return verification_result
         
         # Check 1: Part Number Verification (with internet data)
-        part_check = self._verify_part_number(
-            extracted_data.get('part_number'),
-            official_data.get('part_marking')
-        )
-        verification_result['detailed_scores']['part_number'] = part_check
+        official_part_marking = official_data.get('part_marking')
+        extracted_part = extracted_data.get('part_number')
         
-        if extracted_data.get('part_number') and not part_check['passed']:
-            verification_result['checks_failed'].append('Part Number Mismatch')
-            verification_result['anomalies'].append(
-                f"Part number mismatch: extracted '{extracted_data.get('part_number')}' "
-                f"vs official '{official_data.get('part_marking')}'"
-            )
-        elif part_check['passed']:
+        # Only verify part number if we have both extracted and official data
+        if extracted_part and official_part_marking:
+            part_check = self._verify_part_number(extracted_part, official_part_marking)
+            verification_result['detailed_scores']['part_number'] = part_check
+            
+            if not part_check['passed']:
+                verification_result['checks_failed'].append('Part Number Mismatch')
+                verification_result['anomalies'].append(
+                    f"Part number mismatch: extracted '{extracted_part}' "
+                    f"vs official '{official_part_marking}'"
+                )
+            else:
+                verification_result['checks_passed'].append('Part Number Match')
+        elif extracted_part and has_official_data:
+            # Have datasheet but no specific part marking in data - consider it a pass
             verification_result['checks_passed'].append('Part Number Match')
+            verification_result['detailed_scores']['part_number'] = {
+                'passed': True,
+                'score': 85,
+                'reason': 'Datasheet found for extracted part number'
+            }
         
         # Check 2: Manufacturer Verification (with internet data)
         mfr_check = self._verify_manufacturer(
@@ -203,17 +222,25 @@ class VerificationEngine:
                 f"Country verification: {country_check.get('reason', 'Mismatch')}"
             )
         
-        # Check 5: Print Quality Analysis
-        quality_check = self._verify_print_quality(images)
-        verification_result['detailed_scores']['print_quality'] = quality_check
-        
-        if quality_check['passed']:
-            verification_result['checks_passed'].append('Good Print Quality')
+        # Check 5: Print Quality Analysis (only if images provided)
+        if images:
+            quality_check = self._verify_print_quality(images)
+            verification_result['detailed_scores']['print_quality'] = quality_check
+            
+            if quality_check['passed']:
+                verification_result['checks_passed'].append('Good Print Quality')
+            else:
+                verification_result['checks_failed'].append('Poor Print Quality')
+                verification_result['anomalies'].append(
+                    f"Print quality issue: {quality_check.get('reason', 'Below standard')}"
+                )
         else:
-            verification_result['checks_failed'].append('Poor Print Quality')
-            verification_result['anomalies'].append(
-                f"Print quality issue: {quality_check.get('reason', 'Below standard')}"
-            )
+            # No images provided - skip this check
+            verification_result['detailed_scores']['print_quality'] = {
+                'passed': True,
+                'score': 70,
+                'reason': 'No image data provided for quality analysis'
+            }
         
         # Check 5.5: Text Quality Analysis (NEW)
         text_quality_check = self._analyze_text_quality(extracted_data)
@@ -713,13 +740,14 @@ class VerificationEngine:
         raw_text = extracted.get('raw_text', '')
         lines = extracted.get('lines', [])
         
-        # Typical IC markings have 3-5 lines
-        if len(lines) < 2:
-            issues.append('Too few marking lines')
-            score -= 20
-        elif len(lines) > 6:
-            issues.append('Unusually many marking lines')
-            score -= 10
+        # Typical IC markings have 3-5 lines, but be lenient if we don't have line data
+        if lines:  # Only check if we have line data
+            if len(lines) < 2:
+                issues.append('Too few marking lines')
+                score -= 15  # Reduced penalty
+            elif len(lines) > 6:
+                issues.append('Unusually many marking lines')
+                score -= 10
         
         # Check for special characters that shouldn't be there
         suspicious_chars = ['@', '#', '$', '%', '^', '&', '*', '(', ')']
@@ -728,7 +756,8 @@ class VerificationEngine:
                 issues.append(f'Suspicious character: {char}')
                 score -= 10
         
-        passed = score >= 60 and len(issues) == 0
+        # More lenient passing criteria
+        passed = score >= 50  # Lowered from 60
         
         return {
             'passed': passed,
