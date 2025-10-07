@@ -846,7 +846,7 @@ class VerificationEngine:
                     if variant != part_number:
                         variations.add(variant)
         
-        return list(variations)[:5]  # Limit to 5 most likely variations
+        return list(variations)[:15]  # Increased limit to 15 variations
     
     def _generate_ocr_variations(self, part_number: str) -> List[str]:
         """
@@ -902,3 +902,4 @@ class VerificationEngine:
                                 variations.add(variant)
         
         return list(variations)[:20]  # Limit to top 20 most likely variations
+
