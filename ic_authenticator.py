@@ -27,10 +27,13 @@ from database_manager import DatabaseManager
 try:
     from dynamic_yolo_ocr import DynamicYOLOOCR
     from ic_marking_extractor import ICMarkingExtractor
+    from production_authenticator import ProductionICAuthenticator
     ENHANCED_YOLO_AVAILABLE = True
+    PRODUCTION_AUTHENTICATOR_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Enhanced YOLO-OCR not available: {e}")
     ENHANCED_YOLO_AVAILABLE = False
+    PRODUCTION_AUTHENTICATOR_AVAILABLE = False
 
 
 class ProcessingThread(QThread):
@@ -44,22 +47,67 @@ class ProcessingThread(QThread):
         super().__init__()
         self.image_path = image_path
         self.settings = settings
-        self.image_processor = ImageProcessor()
-        self.ocr_engine = OCREngine()
-        self.scraper = DatasheetScraper()
-        self.verifier = VerificationEngine()
         
-        # Initialize enhanced YOLO-OCR if available
-        if ENHANCED_YOLO_AVAILABLE:
-            self.dynamic_yolo = DynamicYOLOOCR()
-            self.pattern_extractor = ICMarkingExtractor()
-            print("✓ Enhanced YOLO-OCR system initialized for UI")
+        # USE PRODUCTION AUTHENTICATOR AS DEFAULT
+        if PRODUCTION_AUTHENTICATOR_AVAILABLE and settings.get('use_production_auth', True):
+            print("✓ Production IC Authenticator initialized (DEFAULT)")
+            self.production_auth = ProductionICAuthenticator()
+            self.use_production = True
         else:
-            self.dynamic_yolo = None
-            self.pattern_extractor = None
+            self.use_production = False
+            self.image_processor = ImageProcessor()
+            self.ocr_engine = OCREngine()
+            self.scraper = DatasheetScraper()
+            self.verifier = VerificationEngine()
+            
+            # Initialize enhanced YOLO-OCR if available
+            if ENHANCED_YOLO_AVAILABLE:
+                self.dynamic_yolo = DynamicYOLOOCR()
+                self.pattern_extractor = ICMarkingExtractor()
+                print("✓ Enhanced YOLO-OCR system initialized for UI")
+            else:
+                self.dynamic_yolo = None
+                self.pattern_extractor = None
         
     def run(self):
         try:
+            # USE PRODUCTION AUTHENTICATOR IF ENABLED
+            if self.use_production:
+                self.status.emit("Using Production IC Authenticator...")
+                self.progress.emit(20)
+                
+                result = self.production_auth.authenticate(self.image_path)
+                
+                if result['success']:
+                    self.progress.emit(100)
+                    self.status.emit("Authentication complete!")
+                    
+                    # Format result for UI
+                    formatted_result = {
+                        'part_number': result.get('matched_part', 'Unknown'),
+                        'manufacturer': 'Identified from datasheet',
+                        'package_type': 'N/A',
+                        'date_code': ', '.join(result.get('date_codes', [])) or 'Not found',
+                        'lot_code': 'See date codes',
+                        'country': 'N/A',
+                        'ocr_confidence': result['ocr_confidence'],
+                        'raw_ocr_text': result['raw_text'],
+                        'datasheet_found': result['found_datasheet'],
+                        'datasheet_url': result.get('datasheet_url', 'N/A'),
+                        'is_authentic': result['is_authentic'],
+                        'authenticity_confidence': result['confidence'],
+                        'authenticity_reasons': result['reasons'],
+                        'marking_quality': result['marking_quality'],
+                        'preprocessing_variant': result['best_variant']
+                    }
+                    
+                    self.result.emit(formatted_result)
+                else:
+                    raise ValueError(result.get('error', 'Authentication failed'))
+                
+                return
+            
+            # FALLBACK TO ORIGINAL SYSTEM IF PRODUCTION NOT AVAILABLE
             # Step 1: Load and preprocess image
             self.status.emit("Loading image...")
             self.progress.emit(10)
