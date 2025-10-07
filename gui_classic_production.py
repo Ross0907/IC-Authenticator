@@ -223,13 +223,17 @@ class ICAuthenticatorGUI(QMainWindow):
         
         # Additional info grid
         info_grid = QGridLayout()
-        info_grid.setSpacing(3)
+        info_grid.setSpacing(8)
+        info_grid.setColumnStretch(1, 2)  # GPU column gets more space
+        info_grid.setColumnStretch(3, 1)  # Other columns get less space
         
         # GPU status
         gpu_label = QLabel("GPU:")
         gpu_label.setStyleSheet("font-weight: bold; font-size: 9pt;")
         self.gpu_status = QLabel("Detecting...")
         self.gpu_status.setStyleSheet("font-size: 9pt;")
+        self.gpu_status.setWordWrap(True)
+        self.gpu_status.setMinimumWidth(200)
         info_grid.addWidget(gpu_label, 0, 0)
         info_grid.addWidget(self.gpu_status, 0, 1)
         
@@ -271,7 +275,7 @@ class ICAuthenticatorGUI(QMainWindow):
         try:
             if torch.cuda.is_available():
                 gpu_name = torch.cuda.get_device_name(0)
-                self.gpu_status.setText(f"✅ {gpu_name[:20]}")
+                self.gpu_status.setText(f"✅ {gpu_name}")
                 self.gpu_status.setStyleSheet("font-size: 9pt; color: #4CAF50;")
             else:
                 self.gpu_status.setText("❌ CPU Only")

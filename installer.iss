@@ -77,9 +77,6 @@ Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Test Images
 Source: "test_images\*"; DestDir: "{app}\test_images"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Launcher Script
-Source: "ICAuthenticator_Launcher.bat"; DestDir: "{app}"; Flags: ignoreversion
-
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
@@ -102,6 +99,9 @@ Type: filesandordirs; Name: "{app}\__pycache__"
 Type: filesandordirs; Name: "{app}\*.pyc"
 Type: filesandordirs; Name: "{app}\ic_authentication.db"
 Type: filesandordirs; Name: "{app}\datasheet_cache"
+Type: filesandordirs; Name: "{app}\final_production_debug"
+Type: filesandordirs; Name: "{app}\debug_preprocessing"
+Type: filesandordirs; Name: "{app}\production_debug"
 
 [Code]
 var
