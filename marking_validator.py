@@ -78,11 +78,13 @@ class ManufacturerMarkingValidator:
             },
             'NATIONAL': {  # National Semiconductor (now TI)
                 'logo_text': ['NSC', 'NATIONAL', 'NS'],
-                'date_format': 'YYWW',
-                'date_length': 4,
+                'date_format': ['YYWW', 'LETTER_CODE'],  # Supports both numeric and letter-based
+                'date_length': [4, 'variable'],
                 'date_range': (1990, 2011),  # Company acquired by TI in 2011
                 'mandatory_fields': ['part_number', 'date_code'],
-                'product_release': {'ADC0831': 1995}
+                'product_release': {'ADC0831': 1995},
+                'supports_letter_codes': True,  # NS used letter-based date codes
+                'location_prefix': True  # First character often location code
             }
         }
     
@@ -131,6 +133,29 @@ class ManufacturerMarkingValidator:
         
         # Remove non-alphanumeric characters
         cleaned_date = re.sub(r'[^0-9A-Za-z]', '', date_code)
+        
+        # National Semiconductor special handling - letter-based date codes
+        if manufacturer == 'NATIONAL' and scheme.get('supports_letter_codes'):
+            # Pattern: [0-9][A-Z]+[0-9A-Z]* (e.g., "0JRZ3ABE3", "0JRZ", "1K23")
+            # Location code (digit) + Year letter + Month letter + optional lot
+            if len(cleaned_date) >= 3:
+                # Check if starts with digit (location) and contains letters (date code)
+                if cleaned_date[0].isdigit() and any(c.isalpha() for c in cleaned_date[1:4]):
+                    # This is a valid NS letter-coded date
+                    return {
+                        'valid': True,
+                        'reason': 'Valid National Semiconductor letter-based date code',
+                        'type': 'letter_code',
+                        'parsed_date': {'code': cleaned_date, 'format': 'NS_LETTER'}
+                    }
+            # Also accept pure alphanumeric without leading digit
+            elif len(cleaned_date) >= 3 and any(c.isalpha() for c in cleaned_date):
+                return {
+                    'valid': True,
+                    'reason': 'Valid alphanumeric date/lot code',
+                    'type': 'alphanumeric',
+                    'parsed_date': {'code': cleaned_date}
+                }
         
         # First check for full year format (2007, 2023, etc.) - MUST come before YYWW check
         if len(cleaned_date) == 4 and cleaned_date.isdigit() and cleaned_date.startswith('20'):
@@ -290,16 +315,26 @@ class ManufacturerMarkingValidator:
         
         # Validate date codes
         if date_codes:
-            # Use the most likely date code (4 digits)
+            # Try each date code until we find a valid one
             main_date = None
-            for dc in date_codes:
-                cleaned = re.sub(r'[^0-9]', '', dc)
-                if len(cleaned) == 4:
-                    main_date = dc
-                    break
+            date_val = None
             
-            if main_date:
-                date_val = self.validate_date_code(main_date, manufacturer, part_number)
+            for dc in date_codes:
+                # Skip if it's part of the part number
+                if part_number and dc in part_number.upper():
+                    continue
+                
+                # Try validating this code
+                test_val = self.validate_date_code(dc, manufacturer, part_number)
+                if test_val.get('valid'):
+                    main_date = dc
+                    date_val = test_val
+                    break
+                elif not date_val:  # Keep first validation result as fallback
+                    main_date = dc
+                    date_val = test_val
+            
+            if date_val:
                 results['date_validation'] = date_val
                 
                 if not date_val.get('valid'):

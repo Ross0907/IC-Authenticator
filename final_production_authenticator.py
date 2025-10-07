@@ -129,7 +129,7 @@ class FinalProductionAuthenticator:
         return 'UNKNOWN'
     
     def extract_date_codes(self, text: str) -> List[str]:
-        """Extract date codes (YYWW format) and lot codes"""
+        """Extract date codes (YYWW format), lot codes, and alphanumeric codes"""
         dates = []
         
         # YYWW format (4 digits)
@@ -139,6 +139,16 @@ class FinalProductionAuthenticator:
         # Lot codes like E4, A19
         lot_codes = re.findall(r'\b[A-Z]\d{1,2}\b', text)
         dates.extend(lot_codes)
+        
+        # National Semiconductor style: digit + letters + alphanumeric (e.g., "0JRZ3ABE3")
+        ns_codes = re.findall(r'\b\d[A-Z]{2,}[A-Z0-9]*\b', text.upper())
+        dates.extend(ns_codes)
+        
+        # Alphanumeric codes (3-10 chars, mix of letters and numbers)
+        alpha_codes = re.findall(r'\b[A-Z0-9]{3,10}\b', text.upper())
+        # Filter to only include codes with both letters and numbers
+        mixed_codes = [code for code in alpha_codes if any(c.isalpha() for c in code) and any(c.isdigit() for c in code)]
+        dates.extend(mixed_codes)
         
         # Partial dates (2-3 digits)
         partial = re.findall(r'\b\d{2,3}\b', text)

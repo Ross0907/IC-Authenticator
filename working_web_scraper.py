@@ -1,59 +1,114 @@
 """
-WORKING Web Scraper - Actually finds datasheets
-Tests real web searches to verify part existence
+Dynamic Web Scraper for Datasheets and Manufacturer Information
+No hardcoded part numbers - works with any IC
 """
 
 import requests
 from bs4 import BeautifulSoup
 import re
 import time
+from typing import Dict, Optional
+import json
+from urllib.parse import quote
 
 
 class WorkingDatasheetScraper:
-    """Scraper that actually works by checking real sources"""
+    """Universal datasheet scraper - works for any IC part number"""
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive'
         })
-        self.timeout = 5
+        self.timeout = 10
+        
+        # Dynamic manufacturer detection patterns
+        self.manufacturer_patterns = {
+            r'^SN7\d': 'Texas Instruments',
+            r'^TI\d': 'Texas Instruments',
+            r'^TPS\d': 'Texas Instruments',
+            r'^LM\d': 'Texas Instruments',
+            r'^ATMEGA': 'Microchip',
+            r'^ATTINY': 'Microchip',
+            r'^PIC\d': 'Microchip',
+            r'^CY8C': 'Infineon/Cypress',
+            r'^STM32': 'STMicroelectronics',
+            r'^STM\d': 'STMicroelectronics',
+            r'^NRF\d': 'Nordic Semiconductor',
+            r'^MAX\d': 'Maxim/Analog Devices',
+            r'^ADC\d': 'Various Manufacturers',
+            r'^LTC\d': 'Analog Devices',
+            r'^AD\d{3,}': 'Analog Devices',
+            r'^74\w+': 'Various Manufacturers',
+        }
+    
+    def detect_manufacturer(self, part_number: str) -> Optional[str]:
+        """Dynamically detect manufacturer from part number pattern"""
+        part_upper = part_number.upper().strip()
+        
+        for pattern, manufacturer in self.manufacturer_patterns.items():
+            if re.match(pattern, part_upper):
+                return manufacturer
+        
+        return "Unknown Manufacturer"
+    
+    def clean_part_number(self, part_number: str) -> str:
+        """Clean part number for searching"""
+        return part_number.strip().replace(' ', '').replace('_', '-')
     
     def search_octopart(self, part_number: str) -> dict:
         """Search Octopart - most reliable aggregator"""
         try:
-            url = f"https://octopart.com/search?q={part_number}"
+            url = f"https://octopart.com/search?q={quote(part_number)}"
             response = self.session.get(url, timeout=self.timeout)
             
             if response.status_code == 200:
-                # Check if "No results" appears
-                if "No results found" not in response.text and "results" in response.text.lower():
-                    return {'found': True, 'source': 'octopart', 'url': url}
-        except:
-            pass
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # Check for actual results
+                if soup.find_all('div', class_='card') or 'part-result' in response.text.lower():
+                    manufacturer = self.detect_manufacturer(part_number)
+                    return {
+                        'found': True, 
+                        'source': 'Octopart', 
+                        'url': url,
+                        'manufacturer': manufacturer,
+                        'confidence': 'high'
+                    }
+        except Exception as e:
+            print(f"  [Octopart Error]: {str(e)}")
         
         return {'found': False}
     
     def search_alldatasheet(self, part_number: str) -> dict:
         """Search AllDataSheet.com"""
         try:
-            # Clean part number for URL
-            clean_part = part_number.upper().replace('-', '').replace('_', '')
-            url = f"https://www.alldatasheet.com/datasheet-pdf/pdf/1/{clean_part}.html"
-            
-            response = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+            # Use search instead of direct URL
+            search_url = f"https://www.alldatasheet.com/datasheet-pdf/search/search.html?search={quote(part_number)}"
+            response = self.session.get(search_url, timeout=self.timeout, allow_redirects=True)
             
             if response.status_code == 200:
-                if "404" not in response.text and "not found" not in response.text.lower():
-                    return {'found': True, 'source': 'alldatasheet', 'url': url}
-        except:
-            pass
+                if "datasheet" in response.text.lower() and "404" not in response.text:
+                    manufacturer = self.detect_manufacturer(part_number)
+                    return {
+                        'found': True, 
+                        'source': 'AllDatasheet', 
+                        'url': search_url,
+                        'manufacturer': manufacturer,
+                        'confidence': 'medium'
+                    }
+        except Exception as e:
+            print(f"  [AllDatasheet Error]: {str(e)}")
         
         return {'found': False}
     
     def search_ti_direct(self, part_number: str) -> dict:
-        """Search TI directly for SN74 parts"""
-        if not part_number.upper().startswith('SN74'):
+        """Search TI directly for SN74/TI parts"""
+        part_upper = part_number.upper()
+        if not (part_upper.startswith('SN74') or part_upper.startswith('TI') or part_upper.startswith('TPS') or part_upper.startswith('LM')):
             return {'found': False}
         
         try:
@@ -63,15 +118,22 @@ class WorkingDatasheetScraper:
             
             if response.status_code == 200:
                 if "datasheet" in response.text.lower():
-                    return {'found': True, 'source': 'texas_instruments', 'url': url}
-        except:
-            pass
+                    return {
+                        'found': True, 
+                        'source': 'Texas Instruments', 
+                        'url': url,
+                        'manufacturer': 'Texas Instruments',
+                        'confidence': 'high'
+                    }
+        except Exception as e:
+            print(f"  [TI Error]: {str(e)}")
         
         return {'found': False}
     
     def search_microchip_direct(self, part_number: str) -> dict:
-        """Search Microchip directly for ATMEGA parts"""
-        if not part_number.upper().startswith('ATMEGA'):
+        """Search Microchip directly for ATMEGA/PIC/ATTINY parts"""
+        part_upper = part_number.upper()
+        if not (part_upper.startswith('ATMEGA') or part_upper.startswith('ATTINY') or part_upper.startswith('PIC')):
             return {'found': False}
         
         try:
@@ -81,9 +143,15 @@ class WorkingDatasheetScraper:
             
             if response.status_code == 200:
                 if "datasheet" in response.text.lower() or "documentation" in response.text.lower():
-                    return {'found': True, 'source': 'microchip', 'url': url}
-        except:
-            pass
+                    return {
+                        'found': True, 
+                        'source': 'Microchip', 
+                        'url': url,
+                        'manufacturer': 'Microchip',
+                        'confidence': 'high'
+                    }
+        except Exception as e:
+            print(f"  [Microchip Error]: {str(e)}")
         
         return {'found': False}
     
@@ -94,29 +162,42 @@ class WorkingDatasheetScraper:
         
         try:
             # Infineon search
-            search_url = f"https://www.infineon.com/cms/en/search.html?intc=searchkeyword#!term={part_number}&view=keyword"
+            search_url = f"https://www.infineon.com/cms/en/search.html?intc=searchkeyword#!term={quote(part_number)}&view=keyword"
             response = self.session.get(search_url, timeout=self.timeout)
             
             if response.status_code == 200:
                 # If we get a result page (not 404)
                 if part_number.upper() in response.text.upper():
-                    return {'found': True, 'source': 'infineon', 'url': search_url}
-        except:
-            pass
+                    return {
+                        'found': True, 
+                        'source': 'Infineon', 
+                        'url': search_url,
+                        'manufacturer': 'Infineon/Cypress',
+                        'confidence': 'high'
+                    }
+        except Exception as e:
+            print(f"  [Infineon Error]: {str(e)}")
         
         return {'found': False}
     
     def search_datasheetarchive(self, part_number: str) -> dict:
         """Search DatasheetArchive"""
         try:
-            search_url = f"https://www.datasheetarchive.com/search?q={part_number}"
+            search_url = f"https://www.datasheetarchive.com/search?q={quote(part_number)}"
             response = self.session.get(search_url, timeout=self.timeout)
             
             if response.status_code == 200:
                 if "datasheet" in response.text.lower() and "results" in response.text.lower():
-                    return {'found': True, 'source': 'datasheetarchive', 'url': search_url}
-        except:
-            pass
+                    manufacturer = self.detect_manufacturer(part_number)
+                    return {
+                        'found': True, 
+                        'source': 'DatasheetArchive', 
+                        'url': search_url,
+                        'manufacturer': manufacturer,
+                        'confidence': 'medium'
+                    }
+        except Exception as e:
+            print(f"  [Archive Error]: {str(e)}")
         
         return {'found': False}
     
