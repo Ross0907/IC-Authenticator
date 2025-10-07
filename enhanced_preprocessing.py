@@ -168,19 +168,16 @@ def create_multiple_variants(image):
     """
     variants = []
     
-    # Variant 1: Engraved text specialized
-    variants.append(('engraved', preprocess_engraved_text(image)))
-    
-    # Variant 2: TrOCR optimized
+    # Variant 1: TrOCR optimized
     variants.append(('trocr', preprocess_for_trocr(image)))
     
-    # Variant 3: EasyOCR optimized
+    # Variant 2: EasyOCR optimized
     variants.append(('easyocr', preprocess_for_easyocr(image)))
     
-    # Variant 4: docTR optimized
+    # Variant 3: docTR optimized
     variants.append(('doctr', preprocess_for_doctr(image)))
     
-    # Variant 5: Original with mild enhancement
+    # Variant 4: Original with mild enhancement
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:

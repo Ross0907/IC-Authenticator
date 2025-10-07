@@ -1,7 +1,7 @@
 """
 FINAL PRODUCTION IC AUTHENTICATOR
 Integrates all optimizations: GPU, marking validator, working scraper
-83.3% accuracy on test images
+Enhanced preprocessing for accurate text extraction
 """
 
 import cv2
@@ -11,9 +11,11 @@ import re
 import torch
 from pathlib import Path
 from typing import Dict, List, Tuple
+from datetime import datetime
 
 from marking_validator import ManufacturerMarkingValidator
 from working_web_scraper import WorkingDatasheetScraper
+from enhanced_preprocessing import create_multiple_variants
 import easyocr
 
 
@@ -23,15 +25,24 @@ class FinalProductionAuthenticator:
     def __init__(self):
         print("🚀 Initializing Final Production IC Authenticator...")
         
-        # Check GPU availability
+        # Check GPU availability with detailed diagnostics
         self.gpu_available = torch.cuda.is_available()
         if self.gpu_available:
-            print(f"   ✅ GPU: {torch.cuda.get_device_name(0)}")
-            print(f"   CUDA: {torch.version.cuda}")
+            gpu_name = torch.cuda.get_device_name(0)
+            cuda_version = torch.version.cuda
+            print(f"   ✅ GPU Enabled: {gpu_name}")
+            print(f"   ✅ CUDA Version: {cuda_version}")
+            print(f"   ✅ GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+            # Force GPU usage
+            torch.cuda.set_device(0)
         else:
             print("   ⚠️  CPU mode (slower)")
+            print("   ⚠️  To enable GPU: Install CUDA-enabled PyTorch")
         
+        print("   📦 Initializing EasyOCR with GPU support...")
         self.reader = easyocr.Reader(['en'], gpu=self.gpu_available, verbose=False)
+        print(f"   ✅ EasyOCR initialized (GPU: {self.gpu_available})")
+        
         self.validator = ManufacturerMarkingValidator()
         self.scraper = WorkingDatasheetScraper()
         
@@ -41,22 +52,28 @@ class FinalProductionAuthenticator:
         print("✅ System ready!\n")
     
     def preprocess_variants(self, image: np.ndarray) -> List[Tuple[str, np.ndarray]]:
-        """Generate optimized preprocessing variants"""
+        """Generate optimized preprocessing variants using enhanced preprocessing"""
         variants = []
         h, w = image.shape[:2]
         
         # 1. Original
         variants.append(("original", image.copy()))
         
-        # 2. Upscale 2x (best balance of quality/speed)
+        # 2. Upscale 2x for better OCR
         upscaled = cv2.resize(image, (w*2, h*2), interpolation=cv2.INTER_CUBIC)
         variants.append(("upscale_2x", upscaled))
         
-        # 3. CLAHE (for uneven lighting)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image.copy()
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        clahe_img = clahe.apply(gray)
-        variants.append(("clahe", cv2.cvtColor(clahe_img, cv2.COLOR_GRAY2BGR)))
+        # 3. Upscale 3x for very small text
+        upscaled_3x = cv2.resize(image, (w*3, h*3), interpolation=cv2.INTER_CUBIC)
+        variants.append(("upscale_3x", upscaled_3x))
+        
+        # 4-8. Enhanced preprocessing variants
+        enhanced_variants = create_multiple_variants(image)
+        for name, img in enhanced_variants:
+            # Convert back to BGR if grayscale for consistency
+            if len(img.shape) == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            variants.append((f"enhanced_{name}", img))
         
         return variants
     
@@ -65,28 +82,50 @@ class FinalProductionAuthenticator:
         variants = self.preprocess_variants(image)
         
         all_results = []
+        seen_text = set()  # Track unique text to avoid duplicates
+        ocr_bboxes = []  # Store bboxes from original image
+        
         for name, img in variants:
             try:
                 results = self.reader.readtext(img)
                 for bbox, text, conf in results:
                     if conf > 0.3:  # Filter low confidence
-                        all_results.append({
-                            'text': text,
-                            'confidence': conf,
-                            'variant': name
-                        })
+                        # Normalize text for comparison (remove spaces, uppercase)
+                        normalized = text.upper().replace(' ', '').replace('-', '')
+                        
+                        # Only add if we haven't seen this text before
+                        if normalized not in seen_text and len(normalized) > 0:
+                            seen_text.add(normalized)
+                            all_results.append({
+                                'text': text,
+                                'confidence': conf,
+                                'variant': name,
+                                'bbox': bbox  # Store bounding box
+                            })
+                            
+                            # Save bboxes from original image for visualization
+                            if name == 'original':
+                                ocr_bboxes.append((bbox, text, conf))
+                                
             except Exception as e:
                 print(f"   ⚠️  Variant {name} failed: {e}")
                 continue
         
-        # Combine all text
-        full_text = ' '.join([r['text'] for r in all_results])
+        # Combine unique text with better formatting
+        # Group similar texts together
+        texts = [r['text'] for r in all_results]
+        full_text = ' '.join(texts)
+        
+        # Clean up the full text: remove multiple spaces, normalize
+        full_text = ' '.join(full_text.split())
+        
         avg_conf = sum([r['confidence'] for r in all_results]) / len(all_results) if all_results else 0
         
         return {
             'full_text': full_text,
             'average_confidence': avg_conf * 100,
-            'individual_results': all_results
+            'individual_results': all_results,
+            'ocr_bboxes': ocr_bboxes  # For drawing boxes
         }
     
     def normalize_part_number(self, text: str) -> str:
@@ -168,14 +207,78 @@ class FinalProductionAuthenticator:
         
         return ''
     
+    def create_ocr_visualization(self, image: np.ndarray, ocr_result: Dict) -> np.ndarray:
+        """Create visualization with text bounding boxes overlaid"""
+        vis_image = image.copy()
+        
+        # Get bboxes from ocr_result
+        ocr_bboxes = ocr_result.get('ocr_bboxes', [])
+        
+        # Track label positions to prevent overlap
+        label_regions = []
+        
+        # Draw each bounding box
+        for bbox, text, conf in ocr_bboxes:
+            # bbox is a list of 4 points: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            points = np.array(bbox, dtype=np.int32)
+            
+            # Draw the polygon (bounding box)
+            cv2.polylines(vis_image, [points], isClosed=True, color=(0, 255, 0), thickness=2)
+            
+            # Draw text label with confidence
+            label = f"{text} ({conf*100:.1f}%)"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            
+            # Get text size for background
+            (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            
+            # Calculate initial label position (above the box)
+            text_x = int(points[0][0])
+            text_y = int(points[0][1]) - 5
+            
+            # Check for overlap with existing labels and adjust vertically if needed
+            label_rect = [text_x, text_y - text_height - 5, text_x + text_width, text_y + 5]
+            overlap_count = 0
+            for existing_rect in label_regions:
+                # Check if rectangles overlap
+                if not (label_rect[2] < existing_rect[0] or  # completely to the left
+                       label_rect[0] > existing_rect[2] or   # completely to the right
+                       label_rect[3] < existing_rect[1] or   # completely above
+                       label_rect[1] > existing_rect[3]):    # completely below
+                    overlap_count += 1
+            
+            # Offset vertically if overlap detected
+            if overlap_count > 0:
+                text_y -= (text_height + 10) * overlap_count
+                label_rect = [text_x, text_y - text_height - 5, text_x + text_width, text_y + 5]
+            
+            # Store this label's region
+            label_regions.append(label_rect)
+            
+            # Draw background rectangle for text
+            cv2.rectangle(vis_image, 
+                         (label_rect[0], label_rect[1]),
+                         (label_rect[2], label_rect[3]),
+                         (0, 255, 0), -1)
+            
+            # Draw text
+            cv2.putText(vis_image, label, (text_x, text_y), 
+                       font, font_scale, (0, 0, 0), thickness)
+        
+        return vis_image
+    
     def authenticate(self, image_path: str) -> Dict:
         """
-        Complete authentication pipeline
-        Returns comprehensive results with 70+ point threshold for authentic
+        Complete authentication pipeline with comprehensive details
+        Returns all relevant information for display in GUI
         """
         print(f"\n{'='*100}")
         print(f"🔍 AUTHENTICATING: {os.path.basename(image_path)}")
         print('='*100)
+        
+        start_time = datetime.now()
         
         # Load image
         image = cv2.imread(image_path)
@@ -183,14 +286,22 @@ class FinalProductionAuthenticator:
             return {'error': 'Failed to load image', 'is_authentic': False, 'confidence': 0}
         
         # Step 1: Text Extraction
-        print("\n📝 Step 1: Text Extraction (GPU-accelerated)...")
+        print("\n📝 Step 1: Text Extraction (GPU-accelerated with enhanced preprocessing)...")
         ocr_result = self.extract_all_text(image)
         
         full_text = ocr_result['full_text']
         ocr_confidence = ocr_result['average_confidence']
+        individual_results = ocr_result['individual_results']
+        
+        # Save preprocessing variants for debug tab
+        debug_variants = self.preprocess_variants(image)
+        
+        # Create OCR visualization with bounding boxes
+        debug_ocr_image = self.create_ocr_visualization(image, ocr_result)
         
         print(f"   Extracted: {full_text[:80]}{'...' if len(full_text) > 80 else ''}")
         print(f"   Confidence: {ocr_confidence:.1f}%")
+        print(f"   Variants used: {len(set(r['variant'] for r in individual_results))}")
         
         # Step 2: Part Number
         print("\n🔧 Step 2: Part Number Identification...")
@@ -211,7 +322,8 @@ class FinalProductionAuthenticator:
         print("\n🏭 Step 5: Manufacturer Marking Validation...")
         validation = self.validator.validate_markings(part_number, date_codes, logo)
         
-        print(f"   Manufacturer: {validation['manufacturer']}")
+        manufacturer = validation['manufacturer']
+        print(f"   Manufacturer: {manufacturer}")
         print(f"   Validation: {'✅ PASSED' if validation['validation_passed'] else '❌ FAILED'}")
         
         if validation['issues']:
@@ -224,10 +336,23 @@ class FinalProductionAuthenticator:
         datasheet_result = self.scraper.search_comprehensive(part_number)
         datasheet_found = datasheet_result.get('found', False) if isinstance(datasheet_result, dict) else bool(datasheet_result)
         
+        datasheet_source = 'None'
+        datasheet_url = ''
+        datasheet_details = {}
+        
         if datasheet_found:
-            source = (datasheet_result.get('source') if isinstance(datasheet_result, dict) else 
-                     datasheet_result[0].get('source') if isinstance(datasheet_result, list) and datasheet_result else 'Unknown')
-            print(f"   ✅ Found: {source}")
+            if isinstance(datasheet_result, dict):
+                datasheet_source = datasheet_result.get('source', 'Unknown')
+                datasheet_url = datasheet_result.get('url', '')
+                datasheet_details = datasheet_result
+            elif isinstance(datasheet_result, list) and datasheet_result:
+                datasheet_source = datasheet_result[0].get('source', 'Unknown')
+                datasheet_url = datasheet_result[0].get('url', '')
+                datasheet_details = datasheet_result[0]
+            
+            print(f"   ✅ Found: {datasheet_source}")
+            if datasheet_url:
+                print(f"   URL: {datasheet_url}")
         else:
             print(f"   ❌ Not found")
         
@@ -266,9 +391,13 @@ class FinalProductionAuthenticator:
         # Final verdict: 70+ points AND valid markings required
         is_authentic = score >= 70 and validation['validation_passed']
         
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
         print(f"\n   Score: {score}/100")
         for reason in reasons:
             print(f"   {reason}")
+        
+        print(f"\n   Processing time: {processing_time:.2f}s")
         
         print(f"\n{'='*100}")
         if is_authentic:
@@ -277,22 +406,47 @@ class FinalProductionAuthenticator:
             print(f"❌ COUNTERFEIT/SUSPICIOUS - Confidence: {score}%")
         print('='*100)
         
-        return {
+        # Build comprehensive result
+        result = {
             'success': True,
             'image': os.path.basename(image_path),
+            'image_path': image_path,
             'part_number': part_number,
             'date_codes': date_codes,
             'logo_text': logo,
+            'manufacturer': manufacturer,
             'ocr_confidence': ocr_confidence,
             'full_text': full_text,
+            'ocr_details': individual_results,
+            
+            # Datasheet info
             'datasheet_found': datasheet_found,
-            'manufacturer': validation['manufacturer'],
+            'datasheet_source': datasheet_source,
+            'datasheet_url': datasheet_url,
+            'datasheet_details': datasheet_details,
+            
+            # Marking validation
             'marking_validation': validation,
+            'validation_passed': validation['validation_passed'],
+            'validation_issues': validation['issues'],
+            
+            # Authentication result
             'is_authentic': is_authentic,
             'confidence': score,
             'reasons': reasons,
-            'gpu_used': self.gpu_available
+            
+            # Technical details
+            'gpu_used': self.gpu_available,
+            'processing_time': processing_time,
+            'timestamp': datetime.now().isoformat(),
+            
+            # Debug images
+            'debug_variants': debug_variants,
+            'debug_ocr_image': debug_ocr_image,
+            'variants_count': len(set(r['variant'] for r in individual_results))
         }
+        
+        return result
 
 
 # Test the system
