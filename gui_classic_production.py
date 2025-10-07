@@ -437,21 +437,21 @@ class ICAuthenticatorGUI(QMainWindow):
         self.debug_info.setStyleSheet("padding: 20px; font-size: 11pt; color: #888;")
         container_layout.addWidget(self.debug_info)
         
-        # Preprocessing variants section
-        preprocessing_group = QGroupBox("Preprocessing Variants")
-        self.preprocessing_layout = QVBoxLayout()
-        preprocessing_group.setLayout(self.preprocessing_layout)
-        preprocessing_group.setVisible(False)  # Hidden until we have images
-        container_layout.addWidget(preprocessing_group)
-        self.preprocessing_group = preprocessing_group
-        
-        # OCR with bounding boxes section
+        # OCR with bounding boxes section (moved above preprocessing)
         ocr_group = QGroupBox("OCR with Text Bounding Boxes")
         self.ocr_layout = QVBoxLayout()
         ocr_group.setLayout(self.ocr_layout)
         ocr_group.setVisible(False)  # Hidden until we have images
         container_layout.addWidget(ocr_group)
         self.ocr_group = ocr_group
+        
+        # Preprocessing variants section (moved below OCR)
+        preprocessing_group = QGroupBox("Preprocessing Variants")
+        self.preprocessing_layout = QVBoxLayout()
+        preprocessing_group.setLayout(self.preprocessing_layout)
+        preprocessing_group.setVisible(False)  # Hidden until we have images
+        container_layout.addWidget(preprocessing_group)
+        self.preprocessing_group = preprocessing_group
         
         container_layout.addStretch()
         scroll.setWidget(container)
@@ -929,6 +929,52 @@ class ICAuthenticatorGUI(QMainWindow):
                     background-color: #2b2b2b;
                     color: #e0e0e0;
                 }
+                QScrollBar:vertical {
+                    background-color: #2b2b2b;
+                    width: 14px;
+                    border: 1px solid #444;
+                    border-radius: 7px;
+                }
+                QScrollBar::handle:vertical {
+                    background-color: #0d47a1;
+                    border-radius: 6px;
+                    min-height: 30px;
+                }
+                QScrollBar::handle:vertical:hover {
+                    background-color: #1565c0;
+                }
+                QScrollBar::handle:vertical:pressed {
+                    background-color: #0a3d91;
+                }
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                    height: 0px;
+                }
+                QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                    background: none;
+                }
+                QScrollBar:horizontal {
+                    background-color: #2b2b2b;
+                    height: 14px;
+                    border: 1px solid #444;
+                    border-radius: 7px;
+                }
+                QScrollBar::handle:horizontal {
+                    background-color: #0d47a1;
+                    border-radius: 6px;
+                    min-width: 30px;
+                }
+                QScrollBar::handle:horizontal:hover {
+                    background-color: #1565c0;
+                }
+                QScrollBar::handle:horizontal:pressed {
+                    background-color: #0a3d91;
+                }
+                QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                    width: 0px;
+                }
+                QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                    background: none;
+                }
             """)
         else:
             self.theme_btn.setText("🌙 Dark Mode")
@@ -998,6 +1044,52 @@ class ICAuthenticatorGUI(QMainWindow):
                 QStatusBar {
                     background-color: #e0e0e0;
                     color: #212121;
+                }
+                QScrollBar:vertical {
+                    background-color: #f5f5f5;
+                    width: 14px;
+                    border: 1px solid #ccc;
+                    border-radius: 7px;
+                }
+                QScrollBar::handle:vertical {
+                    background-color: #1976d2;
+                    border-radius: 6px;
+                    min-height: 30px;
+                }
+                QScrollBar::handle:vertical:hover {
+                    background-color: #2196f3;
+                }
+                QScrollBar::handle:vertical:pressed {
+                    background-color: #1565c0;
+                }
+                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                    height: 0px;
+                }
+                QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                    background: none;
+                }
+                QScrollBar:horizontal {
+                    background-color: #f5f5f5;
+                    height: 14px;
+                    border: 1px solid #ccc;
+                    border-radius: 7px;
+                }
+                QScrollBar::handle:horizontal {
+                    background-color: #1976d2;
+                    border-radius: 6px;
+                    min-width: 30px;
+                }
+                QScrollBar::handle:horizontal:hover {
+                    background-color: #2196f3;
+                }
+                QScrollBar::handle:horizontal:pressed {
+                    background-color: #1565c0;
+                }
+                QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                    width: 0px;
+                }
+                QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                    background: none;
                 }
             """)
 
