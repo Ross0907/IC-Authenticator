@@ -152,8 +152,12 @@ class FinalProductionAuthenticator:
             r'SN74[A-Z0-9]+',
             r'ADC\d+[A-Z]*',
             r'LM\d+[A-Z]*',
+            r'LT\d+[A-Z]*',           # Linear Technology (Analog Devices)
             r'TL\d+[A-Z]*',
             r'TPS\d+[A-Z]*',
+            r'MC\d+[A-Z]*',           # Motorola/Freescale/NXP
+            r'MAX\d+[A-Z]*',          # Maxim
+            r'LTC\d+[A-Z]*',          # Linear Technology
         ]
         
         for pattern in patterns:
@@ -363,33 +367,53 @@ class FinalProductionAuthenticator:
         reasons = []
         
         # Marking validation (40 pts) - MOST CRITICAL
+        # This checks for INVALID markings (wrong format, impossible dates, etc.)
         if validation['validation_passed']:
             score += 40
             reasons.append("✅ Valid manufacturer markings (+40)")
         else:
+            # Calculate deduction based on severity of issues
             critical = sum(1 for i in validation['issues'] if i['severity'] == 'CRITICAL')
             major = sum(1 for i in validation['issues'] if i['severity'] == 'MAJOR')
             deduction = critical * 20 + major * 10
-            score -= deduction
-            reasons.append(f"❌ Invalid markings (-{deduction})")
+            actual_score = max(0, 40 - deduction)  # Can't go negative
+            score += actual_score
+            reasons.append(f"⚠️  Marking validation issues (+{actual_score}/40)")
         
         # Datasheet (30 pts)
         if datasheet_found:
             score += 30
             reasons.append("✅ Official datasheet (+30)")
+        else:
+            reasons.append("❌ No datasheet found (+0)")
         
         # OCR quality (20 pts)
         ocr_points = min(20, int(ocr_confidence * 20 / 100))
         score += ocr_points
         reasons.append(f"📝 OCR quality (+{ocr_points})")
         
-        # Date code present (10 pts)
-        if date_codes:
+        # Date code bonus (10 pts) - OPTIONAL BONUS, not required
+        # Having a valid date code is good, but absence is not a deal-breaker
+        if date_codes and validation.get('date_validation', {}).get('valid'):
             score += 10
-            reasons.append("✅ Date code present (+10)")
+            reasons.append("✅ Valid date code (+10 bonus)")
+        elif date_codes:
+            reasons.append("⚠️  Date code issues (+0 bonus)")
+        else:
+            reasons.append("ℹ️  No date code (+0 bonus)")
         
-        # Final verdict: 70+ points AND valid markings required
-        is_authentic = score >= 70 and validation['validation_passed']
+        # Final verdict: Adjusted threshold based on datasheet availability
+        # If datasheet found: need 70+ points
+        # If no datasheet but good markings: need 60+ points (some chips are harder to find online)
+        has_critical_issues = any(i['severity'] == 'CRITICAL' for i in validation['issues'])
+        
+        if datasheet_found:
+            threshold = 70
+        else:
+            # Lower threshold for chips without datasheets but valid markings
+            threshold = 60 if validation['validation_passed'] else 70
+        
+        is_authentic = score >= threshold and not has_critical_issues
         
         processing_time = (datetime.now() - start_time).total_seconds()
         

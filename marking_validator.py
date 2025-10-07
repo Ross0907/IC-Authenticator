@@ -35,7 +35,7 @@ class ManufacturerMarkingValidator:
                 'date_format': 'YYWW',  # Year-Week
                 'date_length': 4,
                 'date_range': (2000, 2016),  # Atmel acquired by Microchip in 2016
-                'mandatory_fields': ['part_number', 'date_code'],
+                'mandatory_fields': ['part_number'],  # Date code is OPTIONAL
                 'typical_order': ['logo', 'part_number', 'package', 'date_code'],
                 # ATMEGA328P released in 2009
                 'product_release': {'ATMEGA328P': 2009, 'ATMEGA328': 2009}
@@ -45,7 +45,7 @@ class ManufacturerMarkingValidator:
                 'date_format': 'YYWW',
                 'date_length': 4,
                 'date_range': (2016, 2025),  # After Atmel acquisition
-                'mandatory_fields': ['part_number', 'date_code'],
+                'mandatory_fields': ['part_number'],  # Date code is OPTIONAL
                 'typical_order': ['logo', 'part_number', 'package', 'date_code'],
                 'product_release': {'ATMEGA328P': 2009, 'ATMEGA328': 2009, 'PIC': 1989}
             },
@@ -54,7 +54,7 @@ class ManufacturerMarkingValidator:
                 'date_format': 'YYWW',
                 'date_length': 4,
                 'date_range': (2000, 2025),
-                'mandatory_fields': ['part_number', 'date_code'],  # Lot code optional
+                'mandatory_fields': ['part_number'],  # Date code is OPTIONAL
                 'typical_order': ['part_number', 'date_code', 'lot_code', 'country'],
                 'lot_format': r'^[A-Z]\d{1,2}$',  # E.g., E4, A19
                 'product_release': {'SN74HC595': 1988, 'SN74': 1970}
@@ -64,7 +64,7 @@ class ManufacturerMarkingValidator:
                 'date_format': 'YYWW',
                 'date_length': 4,
                 'date_range': (2003, 2025),
-                'mandatory_fields': ['part_number', 'date_code'],  # Lot code optional
+                'mandatory_fields': ['part_number'],  # Date code is OPTIONAL
                 'typical_order': ['part_number', 'batch', 'date', 'logo', 'lot'],
                 'product_release': {'CY8C29666': 2005, 'CY8C': 2003},
                 # CY8C29666 specific: Full year (2007) is unusual, YYWW (1025) is normal
@@ -81,10 +81,31 @@ class ManufacturerMarkingValidator:
                 'date_format': ['YYWW', 'LETTER_CODE'],  # Supports both numeric and letter-based
                 'date_length': [4, 'variable'],
                 'date_range': (1990, 2011),  # Company acquired by TI in 2011
-                'mandatory_fields': ['part_number', 'date_code'],
+                'mandatory_fields': ['part_number'],  # Date code is OPTIONAL
                 'product_release': {'ADC0831': 1995},
                 'supports_letter_codes': True,  # NS used letter-based date codes
                 'location_prefix': True  # First character often location code
+            },
+            'UNKNOWN': {  # Generic fallback for unrecognized manufacturers
+                'mandatory_fields': ['part_number'],  # Only part number required
+                'date_format': 'YYWW',
+                'date_range': (1990, 2025)
+            },
+            'NXP': {  # NXP (former Freescale/Motorola)
+                'logo_text': ['NXP', 'FREESCALE', 'MOTOROLA'],
+                'date_format': 'YYWW',
+                'date_length': 4,
+                'date_range': (1995, 2025),
+                'mandatory_fields': ['part_number'],
+                'product_release': {'MC33': 2000}
+            },
+            'LINEAR': {  # Linear Technology (now Analog Devices)
+                'logo_text': ['LT', 'LINEAR', 'LTC', 'ANALOG'],
+                'date_format': 'YYWW',
+                'date_length': 4,
+                'date_range': (1985, 2025),
+                'mandatory_fields': ['part_number'],
+                'product_release': {'LT1013': 1985}
             }
         }
     
@@ -115,9 +136,21 @@ class ManufacturerMarkingValidator:
         if 'CYP' in logo_upper or 'CYPRESS' in logo_upper or 'INFINEON' in logo_upper:
             return 'INFINEON'
         
-        # National Semiconductor (ADC, LM, etc.)
+        # National Semiconductor (ADC, etc.)
         if part_upper.startswith('ADC'):
             return 'NATIONAL'
+        
+        # NXP/Freescale/Motorola (MC prefix)
+        if part_upper.startswith('MC'):
+            return 'NXP'
+        if 'NXP' in logo_upper or 'FREESCALE' in logo_upper or 'MOTOROLA' in logo_upper:
+            return 'NXP'
+        
+        # Linear Technology (LT, LTC prefix)
+        if part_upper.startswith(('LT', 'LTC')) and not part_upper.startswith('LM'):
+            return 'LINEAR'
+        if 'LINEAR' in logo_upper or 'ANALOG' in logo_upper:
+            return 'LINEAR'
         
         return 'UNKNOWN'
     
@@ -315,9 +348,8 @@ class ManufacturerMarkingValidator:
         
         # Validate date codes
         if date_codes:
-            # Try each date code until we find a valid one
-            main_date = None
-            date_val = None
+            # Try ALL date codes and collect results
+            all_validations = []
             
             for dc in date_codes:
                 # Skip if it's part of the part number
@@ -326,18 +358,37 @@ class ManufacturerMarkingValidator:
                 
                 # Try validating this code
                 test_val = self.validate_date_code(dc, manufacturer, part_number)
-                if test_val.get('valid'):
-                    main_date = dc
-                    date_val = test_val
-                    break
-                elif not date_val:  # Keep first validation result as fallback
-                    main_date = dc
-                    date_val = test_val
+                test_val['code'] = dc
+                all_validations.append(test_val)
             
-            if date_val:
+            if all_validations:
+                # Priority order:
+                # 1. First valid date code (if any)
+                # 2. CRITICAL invalid date code (worst case)
+                # 3. MAJOR invalid date code
+                # 4. Any other result
+                
+                valid_dates = [v for v in all_validations if v.get('valid')]
+                critical_dates = [v for v in all_validations if v.get('severity') == 'CRITICAL']
+                major_dates = [v for v in all_validations if v.get('severity') == 'MAJOR']
+                
+                if valid_dates:
+                    # Use first valid date
+                    date_val = valid_dates[0]
+                elif critical_dates:
+                    # Use CRITICAL issue (this should fail authentication)
+                    date_val = critical_dates[0]
+                elif major_dates:
+                    # Use MAJOR issue
+                    date_val = major_dates[0]
+                else:
+                    # Use first result
+                    date_val = all_validations[0]
+                
                 results['date_validation'] = date_val
                 
                 if not date_val.get('valid'):
+                    # Date code present but INVALID - this is a red flag
                     results['validation_passed'] = False
                     severity = date_val.get('severity', 'MAJOR')
                     results['issues'].append({
@@ -346,11 +397,12 @@ class ManufacturerMarkingValidator:
                         'message': date_val.get('reason')
                     })
         else:
-            results['validation_passed'] = False
-            results['issues'].append({
+            # No date code found - this is now just a WARNING, not a failure
+            # Some legitimate chips (especially older or specialty chips) may lack date codes
+            results['warnings'].append({
                 'type': 'MISSING_DATE',
-                'severity': 'CRITICAL',
-                'message': 'No date code found - all legitimate ICs have date codes'
+                'severity': 'MINOR',
+                'message': 'No date code found - common in older or specialty ICs'
             })
         
         # Validate lot codes

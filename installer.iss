@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.1.1"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -65,7 +65,6 @@ Source: "working_web_scraper.py"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Configuration & Data Files
 Source: "config.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "yolov8n.pt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
