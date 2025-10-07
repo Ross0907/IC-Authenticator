@@ -30,15 +30,24 @@ class ManufacturerMarkingValidator:
     def __init__(self):
         # Manufacturer-specific marking schemes
         self.marking_schemes = {
-            'MICROCHIP': {
-                'logo_text': ['AMEL', 'ATMEL', 'MICROCHIP', 'amel'],
+            'ATMEL': {  # Now separate from MICROCHIP
+                'logo_text': ['AMEL', 'ATMEL', 'amel'],
                 'date_format': 'YYWW',  # Year-Week
                 'date_length': 4,
-                'date_range': (2000, 2025),  # Valid manufacturing years
-                'mandatory_fields': ['part_number', 'date_code'],  # Removed 'package' - too strict
+                'date_range': (2000, 2016),  # Atmel acquired by Microchip in 2016
+                'mandatory_fields': ['part_number', 'date_code'],
                 'typical_order': ['logo', 'part_number', 'package', 'date_code'],
                 # ATMEGA328P released in 2009
                 'product_release': {'ATMEGA328P': 2009, 'ATMEGA328': 2009}
+            },
+            'MICROCHIP': {  # Post-2016 Atmel chips or native Microchip
+                'logo_text': ['MICROCHIP'],
+                'date_format': 'YYWW',
+                'date_length': 4,
+                'date_range': (2016, 2025),  # After Atmel acquisition
+                'mandatory_fields': ['part_number', 'date_code'],
+                'typical_order': ['logo', 'part_number', 'package', 'date_code'],
+                'product_release': {'ATMEGA328P': 2009, 'ATMEGA328': 2009, 'PIC': 1989}
             },
             'TI': {  # Texas Instruments
                 'logo_text': ['TI', 'TEXAS', 'ti'],
@@ -54,10 +63,18 @@ class ManufacturerMarkingValidator:
                 'logo_text': ['CYP', 'CYPRESS', 'INFINEON', 'cyp'],
                 'date_format': 'YYWW',
                 'date_length': 4,
-                'date_range': (2000, 2025),
+                'date_range': (2003, 2025),
                 'mandatory_fields': ['part_number', 'date_code'],  # Lot code optional
                 'typical_order': ['part_number', 'batch', 'date', 'logo', 'lot'],
-                'product_release': {'CY8C29666': 2005, 'CY8C': 2003}
+                'product_release': {'CY8C29666': 2005, 'CY8C': 2003},
+                # CY8C29666 specific: Full year (2007) is unusual, YYWW (1025) is normal
+                'suspicious_patterns': {
+                    'CY8C29666': {
+                        'full_year_suspicious': True,  # Full year format uncommon for this series
+                        'expected_format': 'YYWW',
+                        'reason': 'CY8C29666 typically uses YYWW format, not full year'
+                    }
+                }
             },
             'NATIONAL': {  # National Semiconductor (now TI)
                 'logo_text': ['NSC', 'NATIONAL', 'NS'],
@@ -74,10 +91,14 @@ class ManufacturerMarkingValidator:
         part_upper = part_number.upper()
         logo_upper = logo_text.upper()
         
-        # Microchip/Atmel (ATMEGA, PIC, ATTINY, etc.)
-        if any(x in part_upper for x in ['ATMEGA', 'ATTINY', 'PIC', 'SAM']):
-            return 'MICROCHIP'
-        if any(x in logo_upper for x in ['AMEL', 'ATMEL', 'MICROCHIP']):
+        # Atmel (ATMEGA, ATTINY, SAM before 2016)
+        if any(x in part_upper for x in ['ATMEGA', 'ATTINY', 'SAM']) and 'MICROCHIP' not in logo_upper:
+            return 'ATMEL'
+        if any(x in logo_upper for x in ['AMEL', 'ATMEL']) and 'MICROCHIP' not in logo_upper:
+            return 'ATMEL'
+        
+        # Microchip (PIC or post-2016 Atmel chips with Microchip logo)
+        if 'PIC' in part_upper or 'MICROCHIP' in logo_upper:
             return 'MICROCHIP'
         
         # Texas Instruments (SN74, TL, LM, etc.)
@@ -111,7 +132,31 @@ class ManufacturerMarkingValidator:
         # Remove non-alphanumeric characters
         cleaned_date = re.sub(r'[^0-9A-Za-z]', '', date_code)
         
-        # Check if it's a 4-digit YYWW format
+        # First check for full year format (2007, 2023, etc.) - MUST come before YYWW check
+        if len(cleaned_date) == 4 and cleaned_date.isdigit() and cleaned_date.startswith('20'):
+            year = int(cleaned_date)
+            if scheme['date_range'][0] <= year <= scheme['date_range'][1]:
+                # Check if full year format is suspicious for this part
+                if 'suspicious_patterns' in scheme:
+                    for product_prefix, pattern in scheme['suspicious_patterns'].items():
+                        if product_prefix in part_number.upper():
+                            if pattern.get('full_year_suspicious'):
+                                return {
+                                    'valid': False,
+                                    'reason': pattern.get('reason', 'Unexpected date format for this part'),
+                                    'severity': 'CRITICAL',
+                                    'suspicious': True,
+                                    'parsed_date': {'year': year}
+                                }
+                
+                return {
+                    'valid': True,
+                    'reason': 'Valid full year',
+                    'type': 'full_year',
+                    'parsed_date': {'year': year}
+                }
+        
+        # Check if it's a 4-digit YYWW format (but NOT starting with 20)
         if len(cleaned_date) == 4 and cleaned_date.isdigit():
             yy = int(cleaned_date[:2])
             ww = int(cleaned_date[2:4])
@@ -171,17 +216,6 @@ class ManufacturerMarkingValidator:
                 'type': 'lot_code',
                 'parsed_date': None
             }
-        
-        # Check for full year (2007, 2023, etc.)
-        if len(cleaned_date) == 4 and cleaned_date.startswith('20'):
-            year = int(cleaned_date)
-            if scheme['date_range'][0] <= year <= scheme['date_range'][1]:
-                return {
-                    'valid': True,
-                    'reason': 'Valid full year',
-                    'type': 'full_year',
-                    'parsed_date': {'year': year}
-                }
         
         return {
             'valid': False,
