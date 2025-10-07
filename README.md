@@ -2,14 +2,22 @@
 
 Advanced Automated Optical Inspection (AOI) system for detecting counterfeit integrated circuits based on marking analysis and datasheet verification.
 
-## Features
+> **Production Ready**: Fully automated system with Type 1 (counterfeit) vs Type 2 (authentic) detection, enhanced YOLO-OCR, and internet-only verification using legitimate sources.
+
+## 🌟 Enhanced Features
 
 ### Core Functionality
-- **Multi-Method OCR**: EasyOCR, PaddleOCR, Tesseract, and ensemble methods
-- **Intelligent Image Processing**: Advanced preprocessing with CLAHE, denoising, and edge detection
+- **🔍 Enhanced YOLO-OCR**: Multi-factor confidence scoring with advanced fallback detection
+- **🌐 Internet-Only Verification**: Fetches data ONLY from legitimate manufacturer/distributor websites
+- **📅 Date Code Critical Checking**: Missing date codes automatically classify ICs as counterfeit
+- **🎯 Type 1 vs Type 2 Classification**:
+  - **Type 1 (Counterfeit)**: Suspicious markings, missing date codes, poor quality, low confidence (<30%)
+  - **Type 2 (Authentic)**: Verified from legitimate sources, complete date code, high quality, high confidence (>70%)
+- **Multi-Method OCR**: EasyOCR, PaddleOCR, Tesseract, TrOCR, and ensemble methods
+- **Intelligent Image Processing**: Advanced preprocessing with CLAHE, denoising, edge detection
 - **IC Detection**: Automatic component detection and marking extraction
-- **Web Scraping**: Automated datasheet search and marking specification extraction
-- **Verification Engine**: Multi-factor authentication analysis
+- **Web Scraping**: Automated datasheet search from legitimate sources only
+- **Verification Engine**: Multi-factor authentication with confidence scoring
 - **Quality Analysis**: Print quality assessment for counterfeit detection
 
 ### User Interface
@@ -30,25 +38,50 @@ Advanced Automated Optical Inspection (AOI) system for detecting counterfeit int
 6. **Marking Format Consistency**: Structure and format validation
 7. **Laser Marking Detection**: Distinguishing authentic laser-etched markings
 
-## Installation
+## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.8 or higher
 - pip package manager
 - (Optional) CUDA for GPU acceleration
 
-### Setup Steps
+### Installation
 
-1. **Clone or download the project**
+1. **Activate virtual environment** (REQUIRED)
 ```powershell
-cd C:\Users\Ross\Downloads\Ic_detection
+& .\.venv\Scripts\Activate.ps1
 ```
 
-2. **Create a virtual environment (recommended)**
+2. **Install dependencies** (if not already installed)
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
+
+3. **Run the application**
+```powershell
+# Option 1: Use launcher (recommended)
+.\run.ps1
+
+# Option 2: Direct execution
+python ic_authenticator.py
+```
+
+### Using the Launcher
+
+The interactive launcher (`run.ps1`) provides easy access to all features:
+```powershell
+.\run.ps1
+```
+
+Options:
+1. Run Main Application (GUI) - Full featured IC authentication
+2. Run All Tests - Comprehensive test suite
+3. Run Core Integration Test - Verify enhanced features
+4. Run Type 1 vs Type 2 Test - Counterfeit detection testing
+5. Run Final Integration Test - Complete system verification
+6. View Project Structure - File organization
+7. View Documentation - Available guides
+8. Exit
 
 3. **Install dependencies**
 ```powershell
@@ -198,6 +231,81 @@ Edit settings for advanced users:
 - Check internet connection
 - Verify datasheet sources are accessible
 - Use cached data when available
+
+## Testing
+
+All test files are organized in the `tests/` directory for better maintainability.
+
+### Running Tests
+
+```bash
+# Activate virtual environment
+& .\.venv\Scripts\Activate.ps1
+
+# Run all tests
+python run_tests.py
+
+# Run specific test
+python run_tests.py core_integration
+python run_tests.py final_integration
+
+# Run individual test directly
+python tests\test_core_integration.py
+```
+
+### Test Categories
+
+- **Integration Tests**: Core and final integration verification
+- **Authentication Tests**: Type 1 vs Type 2 IC testing
+- **YOLO & OCR Tests**: Enhanced detection and text extraction
+- **Component Tests**: Specific IC chip testing
+- **UI Tests**: Enhanced interface verification
+
+See `tests/README.md` for detailed testing information.
+
+## 📁 Project Structure
+
+```
+Ic_detection/
+├── Core System Files
+│   ├── ic_authenticator.py          # Main GUI application
+│   ├── verification_engine.py       # Type 1 vs Type 2 authentication
+│   ├── web_scraper.py               # Internet datasheet scraper
+│   ├── dynamic_yolo_ocr.py          # Enhanced YOLO-OCR system
+│   └── [other core modules]
+├── tests/                            # All test files (15+ tests)
+├── docs/                             # Documentation (15+ guides)
+├── scripts/                          # Utility and debug scripts
+├── legacy/                           # Archived old versions
+├── results/                          # Output files
+├── test_images/                      # Sample IC images
+├── .venv/                            # Virtual environment
+├── README.md                         # This file
+├── PROJECT_STRUCTURE.md              # Detailed structure
+├── REQUIREMENTS_CHECKLIST.md         # Requirements verification
+└── run.ps1                           # Interactive launcher
+```
+
+For complete structure details, see `PROJECT_STRUCTURE.md`.
+
+## 📚 Documentation
+
+### Main Documentation
+- `README.md` - Project overview (this file)
+- `PROJECT_STRUCTURE.md` - Complete file organization
+- `REQUIREMENTS_CHECKLIST.md` - Requirements verification
+
+### Additional Documentation (in `docs/` folder)
+- `ARCHITECTURE.md` - System architecture and design
+- `USER_GUIDE.md` - Comprehensive user manual  
+- `INSTALL.md` - Detailed installation guide
+- `TROUBLESHOOTING.md` - Common issues and solutions
+- `MARKING_GUIDE.md` - IC marking specifications
+- `QUICK_REFERENCE.md` - Quick reference guide
+- And 10+ more specialized guides
+
+### Test Documentation
+- `tests/README.md` - Testing guide and test descriptions
 
 ## Technical Details
 

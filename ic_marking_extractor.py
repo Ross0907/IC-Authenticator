@@ -90,6 +90,61 @@ class ICMarkingExtractor:
             r'\b\d{4,}[A-Z]{1,3}\b',  # Like 1234AB
         ]
     
+    def extract_all_part_numbers(self, text: str) -> List[str]:
+        """
+        Extract ALL possible part numbers from text
+        This is important because ICs have multiple markings (part number, lot code, etc.)
+        """
+        text_clean = self.clean_text(text)
+        all_parts = []
+        
+        # Split text into words and lines
+        words = text_clean.split()
+        
+        # Pattern 1: Standard IC part numbers (e.g., SN74HC595, ATMEGA328P, STM32F103)
+        standard_patterns = [
+            r'\b[A-Z]{2,}\d{2,}[A-Z0-9]{0,4}\b',  # Like SN74HC595, STM32F103
+            r'\b[A-Z]\d{4,}[A-Z]{0,3}\b',  # Like M24512, A1234BC
+            r'\b\d{3,}[A-Z]{2,}\b',  # Like 595N, 328P
+        ]
+        
+        for pattern in standard_patterns:
+            matches = re.findall(pattern, text_clean)
+            all_parts.extend(matches)
+        
+        # Pattern 2: ATmega specific (handle OCR errors)
+        atmega_patterns = [
+            r'(?i)[a@4\']*t\s*me[gel]+[a@4elg]*\s*\d{2,4}[a-z]{0,3}',
+            r'(?i)atmega\s*\d{2,4}[a-z]{0,3}',
+        ]
+        
+        for pattern in atmega_patterns:
+            matches = re.findall(pattern, text_clean)
+            for match in matches:
+                cleaned = match.upper().replace(' ', '').replace('@', 'A')
+                all_parts.append(cleaned)
+        
+        # Pattern 3: Each word that looks like a part number
+        for word in words:
+            word_upper = word.upper()
+            # Must have at least 5 characters
+            # Must contain both letters and numbers
+            if len(word_upper) >= 5 and any(c.isdigit() for c in word_upper) and any(c.isalpha() for c in word_upper):
+                # Skip if it's obviously a date code (4 or 6 digits only)
+                if not re.match(r'^\d{4}$', word_upper) and not re.match(r'^\d{6}$', word_upper):
+                    all_parts.append(word_upper)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_parts = []
+        for part in all_parts:
+            part_clean = part.upper().strip()
+            if part_clean and part_clean not in seen and len(part_clean) >= 4:
+                seen.add(part_clean)
+                unique_parts.append(part_clean)
+        
+        return unique_parts
+    
     def extract_manufacturer(self, text: str) -> Optional[str]:
         """Extract manufacturer from OCR text with fuzzy matching"""
         text_clean = self.clean_text(text)
@@ -287,6 +342,35 @@ class ICMarkingExtractor:
             corrected = corrected.replace('8', 'B')
         
         return corrected
+    
+    def extract_ic_patterns(self, ocr_text: str) -> Dict[str, Optional[str]]:
+        """
+        Extract IC patterns with confidence scoring
+        
+        Returns:
+            Dict with extracted patterns and confidence
+        """
+        patterns = self.parse_ic_marking(ocr_text)
+        
+        # Calculate confidence based on what we extracted
+        confidence = 0.0
+        if patterns['manufacturer']:
+            confidence += 0.3
+        if patterns['part_number']:
+            confidence += 0.4
+        if patterns['date_code']:
+            confidence += 0.2
+        if patterns['lot_code']:
+            confidence += 0.1
+        
+        return {
+            'manufacturer': patterns['manufacturer'] or 'Unknown',
+            'part_number': patterns['part_number'] or 'Unknown', 
+            'date_code': patterns['date_code'] or 'Unknown',
+            'lot_code': patterns['lot_code'] or 'Unknown',
+            'confidence': confidence,
+            'raw_text': ocr_text
+        }
     
     def parse_ic_marking(self, ocr_text: str) -> Dict[str, Optional[str]]:
         """

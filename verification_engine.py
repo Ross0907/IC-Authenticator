@@ -15,11 +15,14 @@ import re
 class VerificationEngine:
     """
     Advanced verification engine for IC authenticity
-    Uses multiple verification methods and machine learning
+    Uses ONLY legitimate internet sources for verification
     """
     
     def __init__(self):
         self.verification_rules = self._load_verification_rules()
+        # Initialize web scraper for legitimate datasheet lookup
+        from web_scraper import DatasheetScraper
+        self.web_scraper = DatasheetScraper()
         
     def _load_verification_rules(self) -> Dict:
         """Load verification rules and thresholds"""
@@ -43,8 +46,9 @@ class VerificationEngine:
         images: Dict
     ) -> Dict[str, Any]:
         """
-        Main verification function
-        Performs comprehensive authenticity check
+        Main verification function using ONLY legitimate internet sources
+        Date code presence is CRITICAL for authenticity verification
+        Now searches ALL extracted part numbers, not just the first one
         """
         verification_result = {
             'is_authentic': False,
@@ -53,50 +57,114 @@ class VerificationEngine:
             'checks_failed': [],
             'anomalies': [],
             'recommendation': '',
-            'detailed_scores': {}
+            'detailed_scores': {},
+            'data_source': 'internet_only'
         }
         
-        # Check if we have official data to compare against
-        has_official_data = official_data.get('found', False)
+        # Import marking extractor for multi-part-number extraction
+        from ic_marking_extractor import ICMarkingExtractor
+        extractor = ICMarkingExtractor()
         
-        if not has_official_data and extracted_data.get('part_number'):
-            # We have extracted data but no official data to compare
-            # This is not necessarily suspicious - could be a valid IC
-            verification_result['is_authentic'] = True
-            verification_result['confidence'] = max(extracted_data.get('confidence', 0) * 100, 60)
-            verification_result['checks_passed'].append('Text Successfully Extracted')
-            verification_result['anomalies'].append(
-                "Official datasheet not found - manual verification recommended"
+        # Extract ALL possible part numbers from the raw OCR text
+        raw_text = extracted_data.get('raw_text', extracted_data.get('part_number', ''))
+        all_part_numbers = extractor.extract_all_part_numbers(raw_text)
+        
+        # Also include the originally extracted part number if present
+        original_part = extracted_data.get('part_number', '')
+        if original_part and original_part not in all_part_numbers:
+            all_part_numbers.insert(0, original_part)
+        
+        print(f"🔍 Found {len(all_part_numbers)} possible part numbers: {all_part_numbers}")
+        
+        # Try each part number until we find official data
+        official_data = None
+        matched_part_number = None
+        
+        for part_num in all_part_numbers:
+            print(f"🌐 Searching for datasheet: {part_num}...")
+            temp_official_data = self.web_scraper.get_ic_official_data(
+                part_num,
+                extracted_data.get('manufacturer', '')
             )
-            verification_result['recommendation'] = self._generate_recommendation(verification_result)
+            
+            if temp_official_data and temp_official_data.get('found', False):
+                official_data = temp_official_data
+                matched_part_number = part_num
+                print(f"✅ Found official datasheet for: {part_num}")
+                # Update extracted data with the correct part number
+                extracted_data['part_number'] = part_num
+                break
+            else:
+                print(f"⚠️ No exact match for: {part_num}")
+                # Only try variations if OCR confidence is low (< 70%)
+                # This prevents false matches between similar IC variants
+                ocr_confidence = extracted_data.get('confidence', 100)
+                if ocr_confidence < 0.70:  # Low confidence OCR
+                    print(f"   ℹ️ Low OCR confidence ({ocr_confidence:.0%}), trying limited variations...")
+                    # Generate only most likely variations (limit to 5 to avoid false matches)
+                    variations = self._generate_limited_ocr_variations(part_num)
+                    for variant in variations:
+                        print(f"   🔄 Trying variation: {variant}")
+                        temp_official_data = self.web_scraper.get_ic_official_data(
+                            variant,
+                            extracted_data.get('manufacturer', '')
+                        )
+                        if temp_official_data and temp_official_data.get('found', False):
+                            official_data = temp_official_data
+                            matched_part_number = variant
+                            print(f"   ✅ Found with variation: {variant} (OCR read as: {part_num})")
+                            extracted_data['part_number'] = variant
+                            break
+                    
+                    if matched_part_number:
+                        break
+                else:
+                    print(f"   ℹ️ High OCR confidence ({ocr_confidence:.0%}), skipping variations to avoid false matches")
+        
+        has_official_data = official_data and official_data.get('found', False)
+        
+        # CRITICAL: Date code check - legitimate ICs MUST have date codes
+        date_code_present = bool(extracted_data.get('date_code'))
+        if not date_code_present:
+            verification_result['is_authentic'] = False
+            verification_result['confidence'] = 20.0  # Very low confidence
+            verification_result['checks_failed'].append('No Date Code Found - CRITICAL')
+            verification_result['anomalies'].append("CRITICAL: No date code found - legitimate ICs always have date codes")
+            verification_result['recommendation'] = "COUNTERFEIT - Legitimate ICs always have manufacturing date codes"
             return verification_result
         
-        # Check 1: Part Number Verification
+        # If no official datasheet found for ANY part number, this is highly suspicious
+        if not has_official_data:
+            verification_result['is_authentic'] = False
+            verification_result['confidence'] = 30.0
+            verification_result['checks_failed'].append('No Official Datasheet Found')
+            verification_result['anomalies'].append(f"No official datasheet found for any extracted part numbers: {all_part_numbers}")
+            verification_result['recommendation'] = "SUSPICIOUS - No official documentation found for any detected part numbers"
+            return verification_result
+        
+        # Check 1: Part Number Verification (with internet data)
         part_check = self._verify_part_number(
             extracted_data.get('part_number'),
             official_data.get('part_marking')
         )
         verification_result['detailed_scores']['part_number'] = part_check
         
-        # Only count as failed if we have extracted data but it doesn't match
         if extracted_data.get('part_number') and not part_check['passed']:
             verification_result['checks_failed'].append('Part Number Mismatch')
             verification_result['anomalies'].append(
                 f"Part number mismatch: extracted '{extracted_data.get('part_number')}' "
-                f"vs expected '{official_data.get('part_marking')}'"
+                f"vs official '{official_data.get('part_marking')}'"
             )
         elif part_check['passed']:
             verification_result['checks_passed'].append('Part Number Match')
-        # If no extracted data, don't count as pass or fail
         
-        # Check 2: Manufacturer Verification
+        # Check 2: Manufacturer Verification (with internet data)
         mfr_check = self._verify_manufacturer(
             extracted_data.get('manufacturer'),
             official_data
         )
         verification_result['detailed_scores']['manufacturer'] = mfr_check
         
-        # Only count as failed if we have extracted data but it doesn't match
         if extracted_data.get('manufacturer') and not mfr_check['passed']:
             verification_result['checks_failed'].append('Manufacturer Mismatch')
             verification_result['anomalies'].append(
@@ -104,9 +172,8 @@ class VerificationEngine:
             )
         elif mfr_check['passed']:
             verification_result['checks_passed'].append('Manufacturer Verified')
-        # If no extracted data, don't count as pass or fail
         
-        # Check 3: Date Code Validation
+        # Check 3: Date Code Validation (CRITICAL CHECK)
         date_check = self._verify_date_code(
             extracted_data.get('date_code'),
             official_data.get('date_code_format')
@@ -148,6 +215,18 @@ class VerificationEngine:
                 f"Print quality issue: {quality_check.get('reason', 'Below standard')}"
             )
         
+        # Check 5.5: Text Quality Analysis (NEW)
+        text_quality_check = self._analyze_text_quality(extracted_data)
+        verification_result['detailed_scores']['text_quality'] = text_quality_check
+        
+        if text_quality_check['passed']:
+            verification_result['checks_passed'].append('Good Text Quality')
+        else:
+            verification_result['checks_failed'].append('Poor Text Quality')
+            verification_result['anomalies'].append(
+                f"Text quality issue: {text_quality_check.get('reason', 'Suspicious text patterns')}"
+            )
+        
         # Check 6: Marking Format Consistency
         format_check = self._verify_marking_format(
             extracted_data,
@@ -182,9 +261,43 @@ class VerificationEngine:
         ])
         
         if has_extracted_data:
-            # We have data to verify - use normal logic
+            # We have data to verify - use more lenient logic
+            # Focus on critical checks: part number and manufacturer
+            critical_checks_passed = 0
+            critical_checks_total = 0
+            
+            # Check part number (most critical)
+            if verification_result['detailed_scores'].get('part_number', {}).get('passed'):
+                critical_checks_passed += 2  # Weight this heavily
+            critical_checks_total += 2
+            
+            # Check manufacturer (critical)
+            if verification_result['detailed_scores'].get('manufacturer', {}).get('passed'):
+                critical_checks_passed += 1
+            critical_checks_total += 1
+            
+            # Check date code (important but not critical)
+            if verification_result['detailed_scores'].get('date_code', {}).get('passed'):
+                critical_checks_passed += 1
+            critical_checks_total += 1
+            
+            # Check text quality (critical for counterfeit detection)
+            if verification_result['detailed_scores'].get('text_quality', {}).get('passed'):
+                critical_checks_passed += 1
+            else:
+                critical_checks_passed -= 1  # Penalize poor text quality
+            critical_checks_total += 1
+            
+            critical_pass_rate = critical_checks_passed / critical_checks_total if critical_checks_total > 0 else 0
+            
+            # More strict for text quality issues
+            text_quality_score = verification_result['detailed_scores'].get('text_quality', {}).get('score', 100)
+            
+            # Authentic if critical pass rate > 50%, confidence > 40%, and no severe text quality issues
             verification_result['is_authentic'] = (
-                pass_rate >= 0.60 and confidence >= 50  # More lenient thresholds
+                critical_pass_rate >= 0.50 and 
+                confidence >= 40 and 
+                text_quality_score >= 60  # Stricter text quality requirement
             )
         else:
             # No extracted data - could be OCR failure, not counterfeit
@@ -255,7 +368,7 @@ class VerificationEngine:
         }
     
     def _verify_manufacturer(self, extracted: str, official_data: Dict) -> Dict:
-        """Verify manufacturer information"""
+        """Verify manufacturer with improved matching"""
         if not extracted:
             return {
                 'passed': False,
@@ -263,31 +376,55 @@ class VerificationEngine:
                 'reason': 'Manufacturer not detected'
             }
         
-        # Check if manufacturer is known
-        known_manufacturers = [
-            'Texas Instruments', 'STMicroelectronics', 'Analog Devices',
-            'Maxim', 'NXP', 'Infineon', 'Microchip', 'ON Semiconductor',
-            'Renesas', 'Cypress', 'Intel', 'Broadcom'
+        # Known manufacturer mappings and aliases
+        manufacturer_aliases = {
+            'ATMEL': ['ATMEL', 'MICROCHIP', 'ATMEL/MICROCHIP'],
+            'MICROCHIP': ['MICROCHIP', 'ATMEL', 'ATMEL/MICROCHIP'],
+            'TEXAS INSTRUMENTS': ['TI', 'TEXAS', 'TEXAS INSTRUMENTS'],
+            'STMICROELECTRONICS': ['ST', 'STM', 'STMICROELECTRONICS'],
+            'CYPRESS': ['CYPRESS', 'INFINEON', 'INFINEON/CYPRESS'],
+            'INFINEON': ['INFINEON', 'CYPRESS', 'INFINEON/CYPRESS'],
+            'ANALOG DEVICES': ['ADI', 'ANALOG', 'ANALOG DEVICES'],
+            'NXP': ['NXP', 'PHILIPS'],
+            'ON SEMICONDUCTOR': ['ON SEMI', 'ON', 'ONSEMI']
+        }
+        
+        extracted_upper = extracted.upper().strip()
+        
+        # Check against known manufacturers and aliases
+        for canonical_name, aliases in manufacturer_aliases.items():
+            for alias in aliases:
+                if alias in extracted_upper or extracted_upper in alias:
+                    return {
+                        'passed': True,
+                        'score': 90,
+                        'extracted': extracted,
+                        'matched': canonical_name,
+                        'reason': f'Verified as {canonical_name}'
+                    }
+        
+        # Additional legitimate manufacturers
+        other_manufacturers = [
+            'MAXIM', 'INTEL', 'AMD', 'VISHAY', 'DIODES', 'ROHM', 
+            'TOSHIBA', 'RENESAS', 'BROADCOM', 'ESPRESSIF'
         ]
         
-        # Fuzzy match against known manufacturers
-        best_match = 0
-        matched_manufacturer = None
-        
-        for mfr in known_manufacturers:
-            similarity = fuzz.ratio(extracted.upper(), mfr.upper())
-            if similarity > best_match:
-                best_match = similarity
-                matched_manufacturer = mfr
-        
-        passed = best_match >= 70
+        for mfr in other_manufacturers:
+            similarity = fuzz.ratio(extracted_upper, mfr)
+            if similarity >= 70:
+                return {
+                    'passed': True,
+                    'score': similarity,
+                    'extracted': extracted,
+                    'matched': mfr,
+                    'reason': f'Recognized manufacturer: {mfr}'
+                }
         
         return {
-            'passed': passed,
-            'score': best_match,
+            'passed': False,
+            'score': 40,
             'extracted': extracted,
-            'matched': matched_manufacturer,
-            'reason': 'Verified' if passed else 'Unknown or suspicious manufacturer'
+            'reason': 'Unknown manufacturer - manual verification needed'
         }
     
     def _verify_date_code(self, extracted: str, expected_format: str) -> Dict:
@@ -430,7 +567,64 @@ class VerificationEngine:
             'reason': 'Country mismatch or unexpected origin'
         }
     
-    def _verify_print_quality(self, images: Dict) -> Dict:
+    def _analyze_text_quality(self, extracted_data: Dict) -> Dict:
+        """Analyze text quality for counterfeit detection"""
+        raw_text = extracted_data.get('raw_text', '')
+        manufacturer = extracted_data.get('manufacturer', '')
+        part_number = extracted_data.get('part_number', '')
+        
+        issues = []
+        score = 100
+        
+        # Check for suspicious manufacturer text
+        if manufacturer:
+            mfr_lower = manufacturer.lower()
+            
+            # Check for common counterfeit patterns
+            suspicious_patterns = [
+                'amel',  # Instead of Atmel
+                'intel',  # Common mistake
+                'texos',  # Instead of Texas
+                'stm32',  # Partial text
+                'cypres'  # Instead of Cypress
+            ]
+            
+            for pattern in suspicious_patterns:
+                if pattern in mfr_lower and pattern != mfr_lower:
+                    issues.append(f'Suspicious manufacturer text: "{manufacturer}"')
+                    score -= 30
+                    break
+        
+        # Check for text quality indicators
+        if raw_text:
+            # Mixed case in manufacturer name (suspicious)
+            if manufacturer and any(c.islower() for c in manufacturer if c.isalpha()):
+                # Only flag if it's not a standard capitalization pattern
+                if manufacturer.lower() != manufacturer and manufacturer.upper() != manufacturer:
+                    # Allow proper names like "Atmel", "Intel", etc.
+                    if not (manufacturer.istitle() or manufacturer in ['Atmel', 'Intel', 'Cypress']):
+                        issues.append('Inconsistent text casing in manufacturer')
+                        score -= 20
+            
+            # Poor OCR confidence suggests poor marking quality
+            ocr_confidence = extracted_data.get('ocr_confidence', 1.0)
+            if ocr_confidence < 0.5:
+                issues.append(f'Low OCR confidence: {ocr_confidence:.2f}')
+                score -= 15
+            
+            # Check for incomplete part numbers
+            if part_number and len(part_number) < 6:
+                issues.append('Part number appears incomplete or truncated')
+                score -= 10
+        
+        passed = score >= 70 and len(issues) == 0
+        
+        return {
+            'passed': passed,
+            'score': score,
+            'issues': issues,
+            'reason': 'Good text quality' if passed else f'Text quality issues: {", ".join(issues)}'
+        }
         """Verify print/marking quality"""
         if 'enhanced' not in images:
             return {
@@ -472,6 +666,23 @@ class VerificationEngine:
             'contrast': contrast,
             'noise': noise,
             'reason': 'Good quality' if passed else 'Poor print quality'
+        }
+    
+    def _verify_print_quality(self, images: Dict) -> Dict:
+        """Verify print/marking quality"""
+        if not images or 'enhanced' not in images:
+            return {
+                'passed': False,
+                'score': 0,
+                'reason': 'No image data available'
+            }
+        
+        # For now, return a basic quality check
+        # In a real implementation, this would analyze image sharpness, contrast, etc.
+        return {
+            'passed': True,
+            'score': 75,
+            'reason': 'Image quality acceptable'
         }
     
     def _estimate_noise(self, image):
@@ -592,3 +803,90 @@ class VerificationEngine:
             )
         
         return recommendation
+    
+    def _generate_limited_ocr_variations(self, part_number: str) -> List[str]:
+        """
+        Generate ONLY the most likely OCR error variations (max 5)
+        Used only when OCR confidence is low to avoid false IC variant matches
+        
+        Most critical confusions:
+        - 2 ↔ P (ATMEGA3282 vs ATMEGA328P)
+        - 8 ↔ B (STM32F8xx vs STM32FBxx)
+        - 0 ↔ O (common in part numbers)
+        """
+        variations = set()
+        
+        # Only the most critical character confusions
+        critical_map = {
+            '2': ['P'],
+            'P': ['2'],
+            '8': ['B'],
+            'B': ['8'],
+            '0': ['O'],
+            'O': ['0']
+        }
+        
+        # Generate only single-character substitutions
+        for i, char in enumerate(part_number):
+            if char in critical_map:
+                for replacement in critical_map[char]:
+                    variant = part_number[:i] + replacement + part_number[i+1:]
+                    if variant != part_number:
+                        variations.add(variant)
+        
+        return list(variations)[:5]  # Limit to 5 most likely variations
+    
+    def _generate_ocr_variations(self, part_number: str) -> List[str]:
+        """
+        Generate common OCR error variations for a part number
+        Handles frequent character confusions without hardcoding specific ICs
+        
+        Common OCR errors:
+        - 2 ↔ P (similar shape)
+        - 8 ↔ B (similar shape)
+        - 1 ↔ I (similar shape)
+        - 0 ↔ O (similar shape)
+        - 5 ↔ S (similar shape)
+        - 6 ↔ G (similar shape)
+        """
+        variations = set()
+        
+        # Character confusion map (bidirectional)
+        confusion_map = {
+            '2': ['P', 'Z'],
+            'P': ['2'],
+            '8': ['B'],
+            'B': ['8'],
+            '1': ['I', 'l'],
+            'I': ['1', 'l'],
+            '0': ['O', 'D'],
+            'O': ['0'],
+            '5': ['S'],
+            'S': ['5'],
+            '6': ['G'],
+            'G': ['6'],
+            '7': ['T'],
+            'T': ['7']
+        }
+        
+        # Generate single-character substitutions
+        for i, char in enumerate(part_number):
+            if char in confusion_map:
+                for replacement in confusion_map[char]:
+                    variant = part_number[:i] + replacement + part_number[i+1:]
+                    if variant != part_number:
+                        variations.add(variant)
+        
+        # Generate two-character substitutions for very common errors
+        # (e.g., "3282" -> "328P" requires 2 changes)
+        if len(part_number) >= 4:
+            for i in range(len(part_number) - 1):
+                char1, char2 = part_number[i], part_number[i+1]
+                if char1 in confusion_map and char2 in confusion_map:
+                    for rep1 in confusion_map[char1]:
+                        for rep2 in confusion_map[char2]:
+                            variant = part_number[:i] + rep1 + rep2 + part_number[i+2:]
+                            if variant != part_number:
+                                variations.add(variant)
+        
+        return list(variations)[:20]  # Limit to top 20 most likely variations

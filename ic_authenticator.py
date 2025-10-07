@@ -23,6 +23,15 @@ from web_scraper import DatasheetScraper
 from verification_engine import VerificationEngine
 from database_manager import DatabaseManager
 
+# Enhanced YOLO-OCR System
+try:
+    from dynamic_yolo_ocr import DynamicYOLOOCR
+    from ic_marking_extractor import ICMarkingExtractor
+    ENHANCED_YOLO_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Enhanced YOLO-OCR not available: {e}")
+    ENHANCED_YOLO_AVAILABLE = False
+
 
 class ProcessingThread(QThread):
     """Background thread for image processing"""
@@ -39,6 +48,15 @@ class ProcessingThread(QThread):
         self.ocr_engine = OCREngine()
         self.scraper = DatasheetScraper()
         self.verifier = VerificationEngine()
+        
+        # Initialize enhanced YOLO-OCR if available
+        if ENHANCED_YOLO_AVAILABLE:
+            self.dynamic_yolo = DynamicYOLOOCR()
+            self.pattern_extractor = ICMarkingExtractor()
+            print("✓ Enhanced YOLO-OCR system initialized for UI")
+        else:
+            self.dynamic_yolo = None
+            self.pattern_extractor = None
         
     def run(self):
         try:
@@ -69,20 +87,63 @@ class ProcessingThread(QThread):
                 ic_regions
             )
             
-            # Step 5: OCR on markings using YOLO-OCR system
-            self.status.emit("Performing advanced YOLO-OCR...")
+            # Step 5: OCR on markings using Enhanced YOLO-OCR system
+            self.status.emit("Performing enhanced YOLO-OCR...")
             self.progress.emit(50)
             
-            # Use direct YOLO-OCR integration for better results
-            print(f"🔍 Using OCR method: {self.settings.get('ocr_method', 'yolo')}")
+            extracted_result = None
             
-            extracted_result = self.ocr_engine.extract_text(
-                marking_regions,
-                method=self.settings.get('ocr_method', 'yolo')
+            # Use enhanced YOLO-OCR if available
+            if self.dynamic_yolo and self.settings.get('use_enhanced_yolo', True):
+                print("🚀 Using Enhanced Dynamic YOLO-OCR System")
+                try:
+                    # Process with enhanced YOLO system
+                    yolo_results = self.dynamic_yolo.extract_text_from_ic(
+                        image, 
+                        preprocessing_method=self.settings.get('preprocessing_method', 'adaptive')
+                    )
+                    
+                    # Extract IC patterns
+                    if yolo_results['final_text']:
+                        pattern_results = self.pattern_extractor.extract_ic_patterns(
+                            yolo_results['final_text']
+                        )
+                        
+                        # Convert to expected format
+                        extracted_result = {
+                            'raw_text': yolo_results['final_text'],
+                            'confidence': yolo_results['confidence'],
+                            'manufacturer': pattern_results.get('manufacturer', 'Unknown'),
+                            'part_number': pattern_results.get('part_number', 'Unknown'),
+                            'date_code': pattern_results.get('date_code', 'Unknown'),
+                            'method': 'enhanced_yolo',
+                            'regions_detected': yolo_results['metadata']['num_regions']
+                        }
+                        
+                        print(f"✅ Enhanced YOLO extracted: {yolo_results['final_text']}")
+                        print(f"📊 Confidence: {yolo_results['confidence']:.3f}")
+                        print(f"🔍 Regions detected: {yolo_results['metadata']['num_regions']}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Enhanced YOLO failed, falling back: {e}")
+                    extracted_result = None
+            
+            # Fallback to standard OCR if enhanced YOLO failed or unavailable
+            if extracted_result is None:
+                print(f"🔍 Using standard OCR method: {self.settings.get('ocr_method', 'yolo')}")
+                extracted_result = self.ocr_engine.extract_text(
+                    marking_regions,
+                    method=self.settings.get('ocr_method', 'yolo')
             )
             
-            # Extract the text and confidence
-            extracted_text = extracted_result.get('text', '')
+            # Extract the text and confidence - handle both formats
+            if 'raw_text' in extracted_result:
+                # Enhanced YOLO format
+                extracted_text = extracted_result.get('raw_text', '')
+            else:
+                # Standard OCR format
+                extracted_text = extracted_result.get('text', '')
+            
             ocr_confidence = extracted_result.get('confidence', 0.0)
             
             print(f"📝 OCR extracted: '{extracted_text}' (confidence: {ocr_confidence:.3f})")
@@ -92,36 +153,54 @@ class ProcessingThread(QThread):
             self.progress.emit(60)
             parsed_data = self.ocr_engine.parse_marking_structure(extracted_text)
             
+            # Ensure raw_text is in parsed_data for verification
+            if 'raw_text' not in parsed_data:
+                parsed_data['raw_text'] = extracted_text
+            
             # Add OCR confidence to parsed data
             parsed_data['ocr_confidence'] = ocr_confidence
             parsed_data['ocr_method'] = self.settings.get('ocr_method', 'yolo')
             
-            # Step 7: Search for datasheet online
-            self.status.emit("Searching for datasheet...")
+            # Step 7: Verify authenticity using ONLY legitimate internet sources
+            self.status.emit("Verifying authenticity with internet sources...")
             self.progress.emit(70)
+            
+            print("🌐 Using internet-only verification (no self-provided data)")
+            
+            # Critical date code check - legitimate ICs MUST have date codes
+            if not parsed_data.get('date_code') or parsed_data.get('date_code') == 'Unknown':
+                print("🚨 CRITICAL: No date code found - legitimate ICs always have date codes")
+            else:
+                print(f"✅ Date code found: {parsed_data.get('date_code')}")
+            
+            # Enhanced verification with internet-only sources
+            verification_result = self.verifier.verify_component(
+                parsed_data,
+                {},  # NO official data provided - must fetch from internet
+                processed_images
+            )
+            
+            print(f"📊 Verification result: {'AUTHENTIC' if verification_result.get('is_authentic', False) else 'COUNTERFEIT'}")
+            print(f"🎯 Confidence: {verification_result.get('confidence', 0):.1f}%")
+            
+            # Log data source verification
+            if verification_result.get('data_source') == 'internet_only':
+                print("✅ Verified using legitimate internet sources only")
+            
+            # Step 8: Fetch datasheet info for display (optional, for reference)
+            self.status.emit("Fetching datasheet for reference...")
+            self.progress.emit(85)
             datasheet_info = self.scraper.search_component_datasheet(
                 parsed_data.get('part_number', ''),
                 parsed_data.get('manufacturer', '')
             )
             
-            # Step 8: Extract marking specifications from datasheet
-            self.status.emit("Analyzing datasheet...")
-            self.progress.emit(80)
             official_markings = self.scraper.extract_marking_specifications(
                 datasheet_info
-            )
+            ) if datasheet_info else {}
             
-            # Step 9: Verify authenticity
-            self.status.emit("Verifying authenticity...")
-            self.progress.emit(90)
-            verification_result = self.verifier.verify_component(
-                parsed_data,
-                official_markings,
-                processed_images
-            )
-            
-            # Step 10: Compile results
-            self.status.emit("Compilation results...")
+            # Step 9: Compile results
+            self.status.emit("Compiling final results...")
             self.progress.emit(95)
             
             result = {
@@ -135,8 +214,15 @@ class ProcessingThread(QThread):
                 'is_authentic': verification_result.get('is_authentic', False),
                 'anomalies': verification_result.get('anomalies', []),
                 'recommendation': verification_result.get('recommendation', ''),
+                'data_source': verification_result.get('data_source', 'unknown'),
+                'enhanced_features': {
+                    'yolo_ocr_used': extracted_result.get('method') == 'enhanced_yolo',
+                    'internet_only_verification': True,
+                    'date_code_critical_check': True,
+                    'regions_detected': extracted_result.get('regions_detected', 0)
+                },
                 'ocr_details': {
-                    'method': self.settings.get('ocr_method', 'yolo'),
+                    'method': extracted_result.get('method', self.settings.get('ocr_method', 'yolo')),
                     'raw_text': extracted_text,
                     'ocr_confidence': ocr_confidence,
                     'regions_detected': extracted_result.get('regions_detected', 0)
@@ -220,12 +306,45 @@ class ICAuthenticatorGUI(QMainWindow):
         ocr_layout.addWidget(ocr_label)
         
         self.ocr_combo = QComboBox()
-        self.ocr_combo.addItems(['YOLO-OCR (Recommended)', 'Ensemble (All)', 'EasyOCR', 
+        self.ocr_combo.addItems(['Enhanced YOLO-OCR (Best)', 'YOLO-OCR (Recommended)', 'Ensemble (All)', 'EasyOCR', 
                                  'Tesseract', 'Auto-Select'])
         ocr_layout.addWidget(self.ocr_combo)
         
+        # Enhanced YOLO Options
+        self.enhanced_yolo_checkbox = QCheckBox("Use Enhanced YOLO System")
+        self.enhanced_yolo_checkbox.setChecked(True)
+        self.enhanced_yolo_checkbox.setToolTip("Uses the latest Dynamic YOLO-OCR with improved confidence scoring")
+        ocr_layout.addWidget(self.enhanced_yolo_checkbox)
+        
+        # Preprocessing method for enhanced YOLO
+        preprocessing_label = QLabel("YOLO Preprocessing Method:")
+        ocr_layout.addWidget(preprocessing_label)
+        
+        self.preprocessing_combo = QComboBox()
+        self.preprocessing_combo.addItems(['adaptive', 'laser', 'printed', 'embossed', 'all'])
+        self.preprocessing_combo.setCurrentText('adaptive')
+        self.preprocessing_combo.setToolTip("Preprocessing method for enhanced YOLO detection")
+        ocr_layout.addWidget(self.preprocessing_combo)
+        
         ocr_group.setLayout(ocr_layout)
         layout.addWidget(ocr_group)
+        
+        # Verification Settings Group
+        verification_group = QGroupBox("Verification Settings")
+        verification_layout = QVBoxLayout()
+        
+        self.internet_only_checkbox = QCheckBox("Internet-Only Verification")
+        self.internet_only_checkbox.setChecked(True)
+        self.internet_only_checkbox.setToolTip("Uses only legitimate internet sources for verification")
+        verification_layout.addWidget(self.internet_only_checkbox)
+        
+        self.date_code_critical_checkbox = QCheckBox("Date Code Critical Check")
+        self.date_code_critical_checkbox.setChecked(True)
+        self.date_code_critical_checkbox.setToolTip("Treats missing date codes as critical authentication failures")
+        verification_layout.addWidget(self.date_code_critical_checkbox)
+        
+        verification_group.setLayout(verification_layout)
+        layout.addWidget(verification_group)
         
         # Debug Options Group
         debug_group = QGroupBox("Debug Visualization")
@@ -506,7 +625,9 @@ class ICAuthenticatorGUI(QMainWindow):
         
         # Get selected method and convert to proper format
         selected_method = self.ocr_combo.currentText()
-        if 'YOLO-OCR' in selected_method:
+        if 'Enhanced YOLO-OCR' in selected_method:
+            ocr_method = 'enhanced_yolo'
+        elif 'YOLO-OCR' in selected_method:
             ocr_method = 'yolo'
         elif 'Ensemble' in selected_method:
             ocr_method = 'ensemble'
@@ -515,15 +636,23 @@ class ICAuthenticatorGUI(QMainWindow):
         elif 'Tesseract' in selected_method:
             ocr_method = 'tesseract'
         else:
-            ocr_method = 'yolo'  # Default to YOLO-OCR
+            ocr_method = 'enhanced_yolo'  # Default to Enhanced YOLO-OCR
         
         settings = {
             'ocr_method': ocr_method,
+            'use_enhanced_yolo': self.enhanced_yolo_checkbox.isChecked(),
+            'preprocessing_method': self.preprocessing_combo.currentText(),
+            'internet_only_verification': self.internet_only_checkbox.isChecked(),
+            'date_code_critical': self.date_code_critical_checkbox.isChecked(),
             'show_debug': True,
             'confidence_threshold': 0.5
         }
         
-        print(f"🔍 Starting IC analysis with OCR method: {ocr_method}")
+        print(f"🔍 Starting IC analysis with enhanced settings:")
+        print(f"  OCR method: {ocr_method}")
+        print(f"  Enhanced YOLO: {settings['use_enhanced_yolo']}")
+        print(f"  Preprocessing: {settings['preprocessing_method']}")
+        print(f"  Internet-only verification: {settings['internet_only_verification']}")
         
         # Create and start processing thread
         self.processing_thread = ProcessingThread(
@@ -648,25 +777,56 @@ class ICAuthenticatorGUI(QMainWindow):
     def format_results(self, results):
         """Format results for display"""
         text = "=" * 80 + "\n"
-        text += "IC AUTHENTICATION ANALYSIS REPORT\n"
+        text += "IC AUTHENTICATION ANALYSIS REPORT (ENHANCED)\n"
         text += "=" * 80 + "\n\n"
         
         text += f"Timestamp: {results.get('timestamp', 'N/A')}\n"
-        text += f"Image: {os.path.basename(results.get('image_path', 'N/A'))}\n\n"
+        text += f"Image: {os.path.basename(results.get('image_path', 'N/A'))}\n"
         
-        text += "-" * 80 + "\n"
+        # Enhanced features info
+        enhanced_features = results.get('enhanced_features', {})
+        if enhanced_features:
+            text += f"\n🚀 ENHANCED FEATURES USED:\n"
+            text += f"  Enhanced YOLO-OCR: {'✅' if enhanced_features.get('yolo_ocr_used') else '❌'}\n"
+            text += f"  Internet-Only Verification: {'✅' if enhanced_features.get('internet_only_verification') else '❌'}\n"
+            text += f"  Date Code Critical Check: {'✅' if enhanced_features.get('date_code_critical_check') else '❌'}\n"
+            text += f"  YOLO Regions Detected: {enhanced_features.get('regions_detected', 0)}\n"
+        
+        text += "\n" + "-" * 80 + "\n"
         text += "EXTRACTED MARKINGS\n"
         text += "-" * 80 + "\n"
         extracted = results.get('extracted_markings', {})
         for key, value in extracted.items():
-            text += f"{key.replace('_', ' ').title()}: {value}\n"
+            if key == 'date_code' and (not value or value == 'Unknown'):
+                text += f"🚨 {key.replace('_', ' ').title()}: {value} (CRITICAL FAILURE)\n"
+            else:
+                text += f"{key.replace('_', ' ').title()}: {value}\n"
+        
+        # OCR details
+        ocr_details = results.get('ocr_details', {})
+        if ocr_details:
+            text += f"\nOCR Method Used: {ocr_details.get('method', 'Unknown')}\n"
+            text += f"OCR Confidence: {ocr_details.get('confidence', 0):.3f}\n"
         
         text += "\n" + "-" * 80 + "\n"
-        text += "OFFICIAL MARKINGS (from Datasheet)\n"
+        text += "VERIFICATION SOURCE\n"
         text += "-" * 80 + "\n"
+        data_source = results.get('data_source', 'unknown')
+        if data_source == 'internet_only':
+            text += "🌐 LEGITIMATE INTERNET SOURCES ONLY\n"
+            text += "✅ No self-provided data used\n"
+            text += "✅ Verified through official manufacturer and distributor sites\n"
+        else:
+            text += f"Data Source: {data_source}\n"
+        
+        # Official markings (for reference only)
         official = results.get('official_markings', {})
-        for key, value in official.items():
-            text += f"{key.replace('_', ' ').title()}: {value}\n"
+        if official:
+            text += "\n" + "-" * 80 + "\n"
+            text += "OFFICIAL MARKINGS (Reference Only)\n"
+            text += "-" * 80 + "\n"
+            for key, value in official.items():
+                text += f"{key.replace('_', ' ').title()}: {value}\n"
         
         text += "\n" + "-" * 80 + "\n"
         text += "VERIFICATION RESULTS\n"

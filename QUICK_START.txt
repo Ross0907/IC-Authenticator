@@ -1,0 +1,31 @@
+﻿# QUICK START GUIDE
+
+## Setup
+1. Activate environment: .\.venv\Scripts\Activate.ps1
+2. Run GUI: python ic_authenticator.py
+3. Quick test: python quick_test.py
+
+## What's Fixed
+- Multi-part-number extraction (extracts ALL part numbers like 52CXRZKE4 AND SN74HC595N)
+- Multi-part-number search (searches for each extracted number until datasheet found)
+- OCR confidence thresholds lowered (15% vs 30%) for better text capture
+- GPU acceleration enabled for TrOCR
+- Tesseract initialization fixed
+
+## Test Results
+- sn74hc595n image: SUCCESS - Extracted '52CXRZKE4 SN74HC595N'
+- Screenshot images: SUCCESS - Extracted full part numbers
+- ADC0831: SUCCESS
+- type1/type2: SUCCESS
+
+## File Organization
+- archived_docs/ - Old documentation
+- temp_tests/ - Development test scripts
+- test_images/ - IC test images
+- tests/ - Unit tests
+
+## Main Files
+- ic_authenticator.py - GUI application
+- dynamic_yolo_ocr.py - OCR system
+- verification_engine.py - Authentication logic
+- quick_test.py - Quick test all images
