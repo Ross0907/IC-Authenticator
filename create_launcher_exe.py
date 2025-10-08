@@ -25,51 +25,38 @@ if sys.platform == 'win32':
 def show_error(title, message):
     """Show error message box"""
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror(title, message)
-    except:
-        # Fallback to Windows API
         ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
+    except:
+        pass
 
 def show_info(title, message):
     """Show info message box"""
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo(title, message)
-    except:
         ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)
+    except:
+        pass
 
 def show_question(title, message):
     """Show yes/no question"""
     try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        return messagebox.askyesno(title, message)
-    except:
-        # Fallback to Windows API (MB_YESNO)
         result = ctypes.windll.user32.MessageBoxW(0, message, title, 0x04)
         return result == 6  # IDYES
+    except:
+        return False
 
 # Get the directory where the executable is located
 app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(app_dir)
 
-# Check Python with multiple methods
+# Check Python with multiple methods (no console output)
 python_found = False
 python_cmd = None
 
 # Method 1: Check if python is in PATH
 for cmd in ['python', 'python3', 'py']:
     try:
-        result = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5, 
+                              creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode == 0:
             python_found = True
             python_cmd = cmd
@@ -91,7 +78,8 @@ if not python_found:
     for path in common_paths:
         if os.path.exists(path):
             try:
-                result = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5)
+                result = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
                 if result.returncode == 0:
                     python_found = True
                     python_cmd = path
@@ -107,14 +95,15 @@ if not python_found:
                "Make sure to check 'Add Python to PATH' during installation.")
     sys.exit(1)
 
-# Check critical dependencies
+# Check critical dependencies (no console output)
 missing_deps = []
 critical_packages = ['PyQt5', 'cv2', 'torch', 'easyocr']
 
 for package in critical_packages:
     try:
         result = subprocess.run([python_cmd, '-c', f'import {package}'], 
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=10,
+                              creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode != 0:
             missing_deps.append(package)
     except:
@@ -129,15 +118,15 @@ if missing_deps:
                             f"(This will take 10-20 minutes)")
     
     if response:
-        # Run the dependency installer
+        # Run the dependency installer in visible console
         try:
             subprocess.Popen([python_cmd, 'install_dependencies.py'], 
                            cwd=app_dir,
                            creationflags=subprocess.CREATE_NEW_CONSOLE)
             show_info("Installing", 
                      "Dependencies are being installed in a new window.\\n\\n"
-                     "Please wait for installation to complete,\\n"
-                     "then restart IC Authenticator.")
+                     "The window will close automatically when done.\\n\\n"
+                     "Please restart IC Authenticator after installation completes.")
             sys.exit(0)
         except Exception as e:
             show_error("Installation Error", 
@@ -148,13 +137,15 @@ if missing_deps:
 
 # Launch the application with pythonw (no console window)
 try:
-    # Try pythonw first (windowed mode)
+    # Try pythonw first (windowed mode - no console)
     pythonw_cmd = python_cmd.replace('python.exe', 'pythonw.exe')
-    if os.path.exists(pythonw_cmd):
-        subprocess.Popen([pythonw_cmd, 'gui_classic_production.py'], cwd=app_dir)
-    else:
-        # Fallback to regular python
-        subprocess.Popen([python_cmd, 'gui_classic_production.py'], cwd=app_dir)
+    if not os.path.exists(pythonw_cmd):
+        pythonw_cmd = python_cmd
+    
+    # Launch with no console window
+    subprocess.Popen([pythonw_cmd, 'gui_classic_production.py'], 
+                    cwd=app_dir,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
 except Exception as e:
     show_error("Launch Error", f"Failed to launch application:\\n\\n{e}")
     sys.exit(1)

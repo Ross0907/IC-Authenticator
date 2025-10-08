@@ -4,7 +4,7 @@
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  IC Authenticator - Installer Builder" -ForegroundColor Cyan
-Write-Host "  Version 3.0.1" -ForegroundColor Cyan
+Write-Host "  Version 3.0.2" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 

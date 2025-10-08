@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "3.0.1"
+#define MyAppVersion "3.0.2"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -68,7 +68,7 @@ Source: "config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
+Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Dependencies
 Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -90,10 +90,10 @@ Filename: "{tmp}\python_installer.exe"; Parameters: "/quiet InstallAllUsers=1 Pr
 ; Wait for Python PATH to be available and refresh environment
 Filename: "cmd.exe"; Parameters: "/c timeout /t 5"; Flags: runhidden waituntilterminated; Check: NeedsPythonInstall
 
-; Run the robust dependency installer
-Filename: "{code:GetPythonPath}\python.exe"; Parameters: """{app}\install_dependencies.py"""; WorkingDir: "{app}"; StatusMsg: "Installing dependencies (10-20 minutes, please be patient)..."; Flags: waituntilterminated; Check: HasPythonAfterInstall
+; Run the robust dependency installer (use cmd.exe to find python in PATH) - HIDDEN
+Filename: "cmd.exe"; Parameters: "/c python ""{app}\install_dependencies.py"""; WorkingDir: "{app}"; StatusMsg: "Installing dependencies (10-20 minutes, please be patient)..."; Flags: runhidden waituntilterminated; Check: HasPythonAfterInstall
 
-; Launch application after install
+; Launch application after install (checked by default)
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]

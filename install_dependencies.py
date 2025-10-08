@@ -126,12 +126,8 @@ def main():
     ):
         failed_packages.append("PyQt5")
     
-    # Step 6: Install scipy and scikit-image
-    if not run_pip_command(
-        [python_exe, "-m", "pip", "install", "scipy>=1.11.0", "scikit-image>=0.21.0"],
-        "Scientific Computing (SciPy, scikit-image)"
-    ):
-        failed_packages.append("scipy/scikit-image")
+    # Step 6: scipy and scikit-image NOT USED - SKIPPED
+    print("\n⏭️  Skipping scipy and scikit-image (not required by application)")
     
     # Step 7: Install PyTorch with CUDA
     print("\n" + "="*60)
@@ -168,20 +164,11 @@ def main():
     ):
         failed_packages.append("web scraping tools")
     
-    # Step 10: Install YOLO
-    if not run_pip_command(
-        [python_exe, "-m", "pip", "install", "ultralytics>=8.0.0"],
-        "Ultralytics YOLO (object detection)"
-    ):
-        failed_packages.append("ultralytics")
+    # Step 10: YOLO/ultralytics NOT USED - SKIPPED
+    print("\n⏭️  Skipping ultralytics/YOLO (not required by application)")
     
-    # Step 11: Install string matching
-    if not run_pip_command(
-        [python_exe, "-m", "pip", "install", 
-         "python-Levenshtein>=0.21.0", "rapidfuzz>=3.0.0"],
-        "String Matching (Levenshtein, RapidFuzz)"
-    ):
-        failed_packages.append("string matching")
+    # Step 11: Levenshtein/rapidfuzz NOT USED - SKIPPED
+    print("⏭️  Skipping Levenshtein/rapidfuzz (not required by application)")
     
     # Summary
     print("\n" + "="*60)
@@ -206,15 +193,23 @@ if __name__ == "__main__":
         success = main()
         
         print("\n" + "="*60)
-        input("\nPress ENTER to close this window...")
+        if success:
+            print("successfully installed all dependencies.")
+            # print("\nWindow will close automatically in 1 second...")
+            # time.sleep(1)
+        else:
+            print("\nWindow will close automatically in 2 seconds...")
+            time.sleep(2)
         
         sys.exit(0 if success else 1)
         
     except KeyboardInterrupt:
         print("\n\n[CANCELLED] Installation cancelled by user")
+        time.sleep(1)
         sys.exit(1)
     except Exception as e:
         print(f"\n\n[FATAL ERROR] {str(e)}")
         print("\nPlease report this error to the developer.")
-        input("\nPress ENTER to close this window...")
+        print("\nWindow will close automatically in 2 seconds...")
+        time.sleep(2)
         sys.exit(1)
