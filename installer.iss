@@ -1,8 +1,8 @@
 ; IC Authenticator - Inno Setup Installer Script
-; Professional Windows Installer with Python Environment
+; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "3.0.1"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -72,6 +72,7 @@ Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 
 ; Dependencies
 Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "install_dependencies.py"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Test Images
 Source: "test_images\*"; DestDir: "{app}\test_images"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -83,12 +84,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: quicklaunchicon
 
 [Run]
-; Install Python if needed
-Filename: "{tmp}\python_installer.exe"; Parameters: "/quiet InstallAllUsers=0 PrependPath=1"; StatusMsg: "Installing Python 3.11..."; Flags: waituntilterminated; Check: NeedsPythonInstall
+; Install Python if needed (with better parameters for silent install)
+Filename: "{tmp}\python_installer.exe"; Parameters: "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0 Include_pip=1 Include_tcltk=0"; StatusMsg: "Installing Python 3.11 (this may take a few minutes)..."; Flags: waituntilterminated; Check: NeedsPythonInstall
 
-; Install Python dependencies
-Filename: "python"; Parameters: "-m pip install --upgrade pip"; WorkingDir: "{app}"; StatusMsg: "Upgrading pip..."; Flags: runhidden waituntilterminated; Check: HasPython
-Filename: "python"; Parameters: "-m pip install -r ""{app}\requirements_production.txt"""; WorkingDir: "{app}"; StatusMsg: "Installing dependencies (this may take several minutes)..."; Flags: runhidden waituntilterminated; Check: HasPython
+; Wait for Python PATH to be available and refresh environment
+Filename: "cmd.exe"; Parameters: "/c timeout /t 5"; Flags: runhidden waituntilterminated; Check: NeedsPythonInstall
+
+; Run the robust dependency installer
+Filename: "{code:GetPythonPath}\python.exe"; Parameters: """{app}\install_dependencies.py"""; WorkingDir: "{app}"; StatusMsg: "Installing dependencies (10-20 minutes, please be patient)..."; Flags: waituntilterminated; Check: HasPythonAfterInstall
 
 ; Launch application after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
@@ -105,51 +108,160 @@ Type: filesandordirs; Name: "{app}\production_debug"
 [Code]
 var
   PythonInstallPage: TOutputProgressWizardPage;
+  PythonPath: String;
 
+{ Check if Python is already installed }
 function HasPython(): Boolean;
 var
   ResultCode: Integer;
+  PythonVer: String;
 begin
-  Result := Exec('python', '--version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Result := False;
+  
+  // Try to run python --version
+  if Exec('python', '--version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if ResultCode = 0 then
+    begin
+      Log('Python found via PATH');
+      Result := True;
+      Exit;
+    end;
+  end;
+  
+  // Try common installation paths
+  if FileExists(ExpandConstant('{autopf}\Python311\python.exe')) then
+  begin
+    Log('Python found at: {autopf}\Python311');
+    PythonPath := ExpandConstant('{autopf}\Python311');
+    Result := True;
+    Exit;
+  end;
+  
+  if FileExists(ExpandConstant('{localappdata}\Programs\Python\Python311\python.exe')) then
+  begin
+    Log('Python found at: {localappdata}\Programs\Python\Python311');
+    PythonPath := ExpandConstant('{localappdata}\Programs\Python\Python311');
+    Result := True;
+    Exit;
+  end;
+  
+  Log('Python not found');
 end;
 
+{ Check if Python is available after installation }
+function HasPythonAfterInstall(): Boolean;
+var
+  ResultCode: Integer;
+  RetryCount: Integer;
+begin
+  Result := False;
+  RetryCount := 0;
+  
+  // Retry a few times as PATH may need to refresh
+  while (not Result) and (RetryCount < 5) do
+  begin
+    Sleep(1000); // Wait 1 second between retries
+    
+    // Try python command
+    if Exec('cmd.exe', '/c python --version', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      if ResultCode = 0 then
+      begin
+        Log('Python available via PATH after install');
+        Result := True;
+        Exit;
+      end;
+    end;
+    
+    // Try full path
+    if FileExists(ExpandConstant('{autopf}\Python311\python.exe')) then
+    begin
+      Log('Python found at: {autopf}\Python311');
+      PythonPath := ExpandConstant('{autopf}\Python311');
+      Result := True;
+      Exit;
+    end;
+    
+    RetryCount := RetryCount + 1;
+  end;
+  
+  if not Result then
+    Log('Python not available after installation attempts');
+end;
+
+{ Determine if Python installation is needed }
 function NeedsPythonInstall(): Boolean;
 begin
   Result := not HasPython();
+  if Result then
+    Log('Python installation needed')
+  else
+    Log('Python already installed, skipping installation');
 end;
 
+{ Get the Python installation path }
+function GetPythonPath(Param: String): String;
+begin
+  if PythonPath <> '' then
+    Result := PythonPath
+  else if FileExists(ExpandConstant('{autopf}\Python311\python.exe')) then
+    Result := ExpandConstant('{autopf}\Python311')
+  else if FileExists(ExpandConstant('{localappdata}\Programs\Python\Python311\python.exe')) then
+    Result := ExpandConstant('{localappdata}\Programs\Python\Python311')
+  else
+    Result := 'python'; // Fallback to PATH
+end;
+
+{ Get Python download URL }
 function GetPythonDownloadURL(): String;
 begin
   Result := 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe';
 end;
 
+{ Download Python installer }
 procedure DownloadPython();
 var
   DownloadPage: TDownloadWizardPage;
+  ErrorMessage: String;
 begin
-  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+  DownloadPage := CreateDownloadPage('Downloading Python', 'Downloading Python 3.11 installer...', nil);
   DownloadPage.Clear;
   DownloadPage.Add(GetPythonDownloadURL(), 'python_installer.exe', '');
   DownloadPage.Show;
   try
     try
       DownloadPage.Download;
+      Log('Python installer downloaded successfully');
     except
+      ErrorMessage := GetExceptionMessage;
       if DownloadPage.AbortedByUser then
-        Log('Python download was aborted by user')
+      begin
+        Log('Python download was aborted by user');
+        MsgBox('Installation cannot continue without Python. Please ensure you have an internet connection and try again.', mbError, MB_OK);
+        Abort;
+      end
       else
-        SuppressibleMsgBox(AddPeriod(GetExceptionMessage), mbCriticalError, MB_OK, IDOK);
+      begin
+        Log('Python download failed: ' + ErrorMessage);
+        MsgBox('Failed to download Python installer: ' + ErrorMessage + #13#10#13#10 + 
+               'Please check your internet connection and try again.', mbError, MB_OK);
+        Abort;
+      end;
     end;
   finally
     DownloadPage.Hide;
   end;
 end;
 
+{ Initialize wizard }
 procedure InitializeWizard();
 begin
-  PythonInstallPage := CreateOutputProgressPage('Checking Python', 'Checking for Python installation...');
+  PythonPath := '';
+  PythonInstallPage := CreateOutputProgressPage('Checking Requirements', 'Checking for Python installation...');
 end;
 
+{ Handle installation steps }
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
@@ -159,19 +271,25 @@ begin
     try
       if not HasPython() then
       begin
-        PythonInstallPage.SetText('Python not found. Downloading Python 3.11...', '');
+        PythonInstallPage.SetText('Python not found.', 'Downloading Python 3.11...');
+        PythonInstallPage.SetProgress(0, 100);
         DownloadPython();
+        PythonInstallPage.SetText('Python downloaded.', 'Python will be installed next...');
+        PythonInstallPage.SetProgress(100, 100);
       end
       else
       begin
-        PythonInstallPage.SetText('Python found!', '');
+        PythonInstallPage.SetText('Python found!', 'Using existing Python installation.');
+        PythonInstallPage.SetProgress(100, 100);
       end;
+      Sleep(1000);
     finally
       PythonInstallPage.Hide;
     end;
   end;
 end;
 
+{ Initialize setup }
 function InitializeSetup(): Boolean;
 begin
   Result := True;
@@ -179,7 +297,21 @@ begin
   // Check if 64-bit Windows
   if not Is64BitInstallMode then
   begin
-    MsgBox('This application requires 64-bit Windows 10 or later.', mbError, MB_OK);
+    MsgBox('This application requires 64-bit Windows 10 or later.' + #13#10#13#10 + 
+           'Your system is not compatible.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  
+  // Display welcome message
+  if MsgBox('IC Authenticator will now be installed.' + #13#10#13#10 + 
+            'This installer will:' + #13#10 +
+            '  • Install Python 3.11 (if not already installed)' + #13#10 +
+            '  • Install required dependencies (PyQt5, OpenCV, EasyOCR, etc.)' + #13#10 +
+            '  • Create desktop shortcuts' + #13#10#13#10 +
+            'The installation may take several minutes depending on your internet speed.' + #13#10#13#10 +
+            'Do you want to continue?', mbInformation, MB_YESNO) = IDNO then
+  begin
     Result := False;
   end;
 end;

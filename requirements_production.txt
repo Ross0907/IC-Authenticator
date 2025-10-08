@@ -1,21 +1,26 @@
 # IC Authenticator - Production Requirements
 # Minimal dependencies for MSI installer
 
-# Core Image Processing
-opencv-python>=4.8.0
+# Core Dependencies (installed first by installer)
 numpy>=1.24.0
+opencv-python-headless>=4.8.0
 Pillow>=10.0.0
 
 # GUI
 PyQt5>=5.15.0
+PyQt5-Qt5>=5.15.0
 
-# Deep Learning (CUDA-enabled PyTorch)
+# Deep Learning (CUDA-enabled PyTorch) - Large downloads, installed separately
 --index-url https://download.pytorch.org/whl/cu118
 torch>=2.0.0
 torchvision>=0.15.0
 
-# OCR
+# OCR - Requires torch/numpy to be installed first
 easyocr>=1.7.0
+
+# Image Processing Libraries
+scikit-image>=0.21.0
+scipy>=1.11.0
 
 # Web Scraping
 requests>=2.31.0
@@ -27,3 +32,4 @@ ultralytics>=8.0.0
 
 # String Matching
 python-Levenshtein>=0.21.0
+rapidfuzz>=3.0.0

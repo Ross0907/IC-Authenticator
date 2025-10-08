@@ -7,7 +7,7 @@ import os
 import sys
 import subprocess
 
-# Create a simple Python launcher script
+# Create a simple Python launcher script with better error handling
 launcher_code = '''
 import os
 import sys
@@ -22,91 +22,141 @@ if sys.platform == 'win32':
     except:
         pass
 
+def show_error(title, message):
+    """Show error message box"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(title, message)
+    except:
+        # Fallback to Windows API
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)
+
+def show_info(title, message):
+    """Show info message box"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo(title, message)
+    except:
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)
+
+def show_question(title, message):
+    """Show yes/no question"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        return messagebox.askyesno(title, message)
+    except:
+        # Fallback to Windows API (MB_YESNO)
+        result = ctypes.windll.user32.MessageBoxW(0, message, title, 0x04)
+        return result == 6  # IDYES
+
 # Get the directory where the executable is located
 app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(app_dir)
 
-# Check Python
-try:
-    result = subprocess.run(['python', '--version'], capture_output=True, text=True)
-    if result.returncode != 0:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("Python Not Found", 
-                           "Python is not installed or not in PATH.\\n\\n"
-                           "Please install Python 3.11 or later from:\\n"
-                           "https://www.python.org")
-        sys.exit(1)
-except Exception as e:
-    import tkinter as tk
-    from tkinter import messagebox
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showerror("Error", f"Failed to check Python: {e}")
+# Check Python with multiple methods
+python_found = False
+python_cmd = None
+
+# Method 1: Check if python is in PATH
+for cmd in ['python', 'python3', 'py']:
+    try:
+        result = subprocess.run([cmd, '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            python_found = True
+            python_cmd = cmd
+            break
+    except:
+        continue
+
+# Method 2: Check common installation paths
+if not python_found:
+    common_paths = [
+        r"C:\\Program Files\\Python311\\python.exe",
+        r"C:\\Program Files\\Python310\\python.exe",
+        r"C:\\Python311\\python.exe",
+        r"C:\\Python310\\python.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\\Programs\\Python\\Python311\\python.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\\Programs\\Python\\Python310\\python.exe"),
+    ]
+    
+    for path in common_paths:
+        if os.path.exists(path):
+            try:
+                result = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    python_found = True
+                    python_cmd = path
+                    break
+            except:
+                continue
+
+if not python_found:
+    show_error("Python Not Found", 
+               "Python is not installed or not in PATH.\\n\\n"
+               "Please install Python 3.11 or later from:\\n"
+               "https://www.python.org\\n\\n"
+               "Make sure to check 'Add Python to PATH' during installation.")
     sys.exit(1)
 
-# Check dependencies
-try:
-    result = subprocess.run(['python', '-c', 'import PyQt5'], 
-                          capture_output=True, text=True)
-    if result.returncode != 0:
-        # Dependencies not installed, try to install
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        response = messagebox.askyesno("Install Dependencies", 
-                                      "Required dependencies are not installed.\\n\\n"
-                                      "Would you like to install them now?\\n"
-                                      "(This will take a few minutes)")
-        if response:
-            # Show progress window
-            progress_window = tk.Toplevel()
-            progress_window.title("Installing Dependencies")
-            progress_window.geometry("400x100")
-            label = tk.Label(progress_window, 
-                           text="Installing dependencies...\\nThis may take several minutes.\\nPlease wait...")
-            label.pack(expand=True)
-            progress_window.update()
-            
-            # Install dependencies
-            subprocess.run(['python', '-m', 'pip', 'install', '--upgrade', 'pip'], 
-                         capture_output=True)
-            result = subprocess.run(['python', '-m', 'pip', 'install', '-r', 
-                                   'requirements_production.txt'], 
-                                  capture_output=True, text=True)
-            
-            progress_window.destroy()
-            
-            if result.returncode != 0:
-                messagebox.showerror("Installation Failed", 
-                                   f"Failed to install dependencies:\\n\\n{result.stderr}")
-                sys.exit(1)
-            else:
-                messagebox.showinfo("Success", "Dependencies installed successfully!")
-        else:
+# Check critical dependencies
+missing_deps = []
+critical_packages = ['PyQt5', 'cv2', 'torch', 'easyocr']
+
+for package in critical_packages:
+    try:
+        result = subprocess.run([python_cmd, '-c', f'import {package}'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            missing_deps.append(package)
+    except:
+        missing_deps.append(package)
+
+if missing_deps:
+    # Offer to install dependencies
+    response = show_question("Install Dependencies", 
+                            f"The following dependencies are missing:\\n"
+                            f"{', '.join(missing_deps)}\\n\\n"
+                            f"Would you like to install them now?\\n"
+                            f"(This will take 10-20 minutes)")
+    
+    if response:
+        # Run the dependency installer
+        try:
+            subprocess.Popen([python_cmd, 'install_dependencies.py'], 
+                           cwd=app_dir,
+                           creationflags=subprocess.CREATE_NEW_CONSOLE)
+            show_info("Installing", 
+                     "Dependencies are being installed in a new window.\\n\\n"
+                     "Please wait for installation to complete,\\n"
+                     "then restart IC Authenticator.")
+            sys.exit(0)
+        except Exception as e:
+            show_error("Installation Error", 
+                      f"Failed to start dependency installer:\\n\\n{e}")
             sys.exit(1)
-except Exception as e:
-    import tkinter as tk
-    from tkinter import messagebox
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showerror("Error", f"Failed to check dependencies: {e}")
-    sys.exit(1)
+    else:
+        sys.exit(1)
 
-# Launch the application
+# Launch the application with pythonw (no console window)
 try:
-    subprocess.Popen(['pythonw', 'gui_classic_production.py'], 
-                    cwd=app_dir)
+    # Try pythonw first (windowed mode)
+    pythonw_cmd = python_cmd.replace('python.exe', 'pythonw.exe')
+    if os.path.exists(pythonw_cmd):
+        subprocess.Popen([pythonw_cmd, 'gui_classic_production.py'], cwd=app_dir)
+    else:
+        # Fallback to regular python
+        subprocess.Popen([python_cmd, 'gui_classic_production.py'], cwd=app_dir)
 except Exception as e:
-    import tkinter as tk
-    from tkinter import messagebox
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showerror("Launch Error", 
-                       f"Failed to launch application:\\n\\n{e}")
+    show_error("Launch Error", f"Failed to launch application:\\n\\n{e}")
     sys.exit(1)
 '''
 
