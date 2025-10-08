@@ -12,6 +12,15 @@ launcher_code = '''
 import os
 import sys
 import subprocess
+import ctypes
+
+# Set Windows App User Model ID for proper taskbar icon (before anything else)
+if sys.platform == 'win32':
+    try:
+        myappid = 'Ross0907.ICAuthenticator.ProductionGUI.v3.0'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except:
+        pass
 
 # Get the directory where the executable is located
 app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -107,15 +116,17 @@ with open('launcher.py', 'w') as f:
 
 print("Created launcher.py")
 print("\nNow creating ICAuthenticator.exe...")
-print("Running: python -m PyInstaller --onefile --windowed --icon=icon.ico --name=ICAuthenticator launcher.py")
+print("Running: python -m PyInstaller with advanced icon settings...")
 
-# Create the executable with PyInstaller
+# Create the executable with PyInstaller with more specific settings
 result = subprocess.run([
     sys.executable, '-m', 'PyInstaller',
     '--onefile',
     '--windowed',
     '--icon=icon.ico',
     '--name=ICAuthenticator',
+    '--add-data=icon.ico;.',  # Include icon in the bundle
+    '--add-data=icon.png;.',  # Include PNG icon too
     'launcher.py'
 ], capture_output=True, text=True)
 

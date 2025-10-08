@@ -46,8 +46,14 @@ class FinalProductionAuthenticator:
         self.validator = ManufacturerMarkingValidator()
         self.scraper = WorkingDatasheetScraper()
         
-        self.debug_dir = "final_production_debug"
-        os.makedirs(self.debug_dir, exist_ok=True)
+        # Use user's temp directory to avoid permission issues
+        import tempfile
+        self.debug_dir = os.path.join(tempfile.gettempdir(), "ic_authenticator_debug")
+        try:
+            os.makedirs(self.debug_dir, exist_ok=True)
+        except Exception as e:
+            print(f"   ⚠️  Could not create debug directory: {e}")
+            self.debug_dir = tempfile.gettempdir()
         
         print("✅ System ready!\n")
     
@@ -171,33 +177,63 @@ class FinalProductionAuthenticator:
         
         return 'UNKNOWN'
     
-    def extract_date_codes(self, text: str) -> List[str]:
+    def extract_date_codes(self, text: str, part_number: str = '', logo: str = '') -> List[str]:
         """Extract date codes (YYWW format), lot codes, and alphanumeric codes"""
         dates = []
+        text_upper = text.upper()
         
-        # YYWW format (4 digits)
+        # Manufacturer logos and common keywords to exclude
+        exclude_keywords = [
+            'NXP', 'NX5', 'ATMEL', 'AMEL', 'MICROCHIP', 'TI', 'TEXAS', 'CYPRESS', 'CYP', 
+            'INFINEON', 'NSC', 'NATIONAL', 'ADI', 'ANALOG', 'DEVICES', 'ST', 'MAXIM',
+            'ON', 'SEMI', 'FAIRCHILD', 'VISHAY', 'ROHM', 'TOSHIBA', 'RENESAS'
+        ]
+        
+        # Also exclude the part number itself
+        if part_number:
+            exclude_keywords.append(part_number.upper())
+            # Add variants of part number (without suffixes)
+            base_part = re.match(r'([A-Z]+\d+)', part_number.upper())
+            if base_part:
+                exclude_keywords.append(base_part.group(1))
+        
+        # YYWW format (4 digits) - most common date code format
         yyww = re.findall(r'\b\d{4}\b', text)
-        dates.extend(yyww)
+        for code in yyww:
+            # Filter out codes that are part of part number
+            if not any(code in keyword for keyword in exclude_keywords):
+                dates.append(code)
         
-        # Lot codes like E4, A19
-        lot_codes = re.findall(r'\b[A-Z]\d{1,2}\b', text)
-        dates.extend(lot_codes)
+        # Lot codes like E4, A19 (single letter + 1-2 digits)
+        lot_codes = re.findall(r'\b[A-Z]\d{1,2}\b', text_upper)
+        for code in lot_codes:
+            if code not in exclude_keywords:
+                dates.append(code)
         
         # National Semiconductor style: digit + letters + alphanumeric (e.g., "0JRZ3ABE3")
-        ns_codes = re.findall(r'\b\d[A-Z]{2,}[A-Z0-9]*\b', text.upper())
-        dates.extend(ns_codes)
+        ns_codes = re.findall(r'\b\d[A-Z]{2,}[A-Z0-9]*\b', text_upper)
+        for code in ns_codes:
+            if not any(excl in code for excl in exclude_keywords):
+                dates.append(code)
         
         # Alphanumeric codes (3-10 chars, mix of letters and numbers)
-        alpha_codes = re.findall(r'\b[A-Z0-9]{3,10}\b', text.upper())
+        alpha_codes = re.findall(r'\b[A-Z0-9]{3,10}\b', text_upper)
         # Filter to only include codes with both letters and numbers
-        mixed_codes = [code for code in alpha_codes if any(c.isalpha() for c in code) and any(c.isdigit() for c in code)]
+        mixed_codes = [code for code in alpha_codes 
+                      if any(c.isalpha() for c in code) 
+                      and any(c.isdigit() for c in code)
+                      and not any(excl in code for excl in exclude_keywords)
+                      and code not in exclude_keywords]
         dates.extend(mixed_codes)
         
-        # Partial dates (2-3 digits)
+        # Partial dates (2-3 digits) - be more restrictive
         partial = re.findall(r'\b\d{2,3}\b', text)
-        partial = [p for p in partial if len(p) >= 2 and int(p) > 0]
-        dates.extend(partial)
+        for p in partial:
+            # Only include if it looks like a valid date (not part of part number)
+            if len(p) >= 2 and int(p) > 0 and p not in text_upper.replace(part_number.upper(), ''):
+                dates.append(p)
         
+        # Remove duplicates and return
         return list(set(dates))
     
     def extract_logo(self, text: str) -> str:
@@ -312,15 +348,15 @@ class FinalProductionAuthenticator:
         part_number = self.normalize_part_number(full_text)
         print(f"   Part: {part_number}")
         
-        # Step 3: Date Codes
-        print("\n📅 Step 3: Date Code Extraction...")
-        date_codes = self.extract_date_codes(full_text)
-        print(f"   Dates: {date_codes}")
-        
-        # Step 4: Logo
+        # Step 4: Logo (extract before date codes)
         logo = self.extract_logo(full_text)
         if logo:
             print(f"   Logo: {logo}")
+        
+        # Step 3: Date Codes (pass part_number and logo to filter them out)
+        print("\n📅 Step 3: Date Code Extraction...")
+        date_codes = self.extract_date_codes(full_text, part_number, logo)
+        print(f"   Dates: {date_codes}")
         
         # Step 5: Manufacturer Marking Validation (CRITICAL)
         print("\n🏭 Step 5: Manufacturer Marking Validation...")
