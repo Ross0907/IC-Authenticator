@@ -58,44 +58,76 @@ class SmartICAuthenticator:
         self.ic_patterns = {
             'ATMEGA': r'AT\s*[MT]?EGA\s*\d+[A-Z]*\d*',  # More lenient: AT MEGA, ATMEGA, AMEGA
             'ATTINY': r'AT\s*TINY\s*\d+[A-Z]*',
+            'ATMEL': r'AT\s*MEL\s*\d+[A-Z]*\d*',  # ATMEL general
             'PIC': r'PIC\s*\d+[A-Z]\s*\d+[A-Z]*\d*',  # Allow spaces in PIC18F45K22
-            'STM32': r'STM32[A-Z]\d+[A-Z]*',
-            'LM': r'LM\s*\d+[A-Z]*\d*[A-Z]*',  # Allow space between LM and number
-            'TL': r'TL\d+[A-Z]*',
+            'STM32': r'STM32[A-Z]\d+[A-Z]*\d*[A-Z]*',
+            'LM': r'[IL]M\s*\d+[A-Z]*\d*[A-Z]*',  # Allow I→L confusion
+            'TL': r'[TI][LI]\s*\d+[A-Z]*\d*',  # Texas Instruments TL series with OCR errors
+            'TLC': r'TLC\s*\d+[A-Z]*',  # TI TLC series
+            'TPS': r'TPS\s*\d+[A-Z]*\d*',  # TI TPS power series
             'SN74': r'SN74[A-Z]+\d+[A-Z]*',
+            'SN': r'[S5]N\s*\d+[A-Z]*\d*',  # General SN series (5→S confusion)
             'CY8C': r'CY8C\d+[A-Z]*-?\d*[A-Z]*',  # Optional dash
-            'CY7C': r'CY7C\d+[A-Z]*',
-            'MC': r'MC\d+[A-Z]*\d*[A-Z]*',
+            'CY7C': r'CY7C\d+[A-Z]*-?\d*[A-Z]*',
+            'MC': r'[MN]C\d+[A-Z]*\d*[A-Z]*',  # M→N confusion
+            'MCP': r'MCP\s*\d+[A-Z]*\d*',  # Microchip MCP series
             'ADC': r'ADC\s*\d+[A-Z]+\d*',  # ADC followed by number and letters
-            'DAC': r'DAC\d+[A-Z]*',
-            'LT': r'LT\d+[A-Z]*\d*',
-            'AD': r'AD\d+[A-Z]*',
-            'MAX': r'MAX\d+[A-Z]*',
-            'NE': r'NE\d+[A-Z]*',
+            'DAC': r'DAC\s*\d+[A-Z]*\d*',
+            'LT': r'[IL]T\s*\d+[A-Z]*\d*',  # I→L confusion
+            'AD': r'A[D0O]\s*\d+[A-Z]*\d*',  # D→0/O confusion
+            'MAX': r'[MNW]AX\s*\d+[A-Z]*\d*',  # M→N/W confusion
+            'NE': r'[NW]E\s*\d+[A-Z]*\d*',  # N→W confusion
+            'SE': r'[S5]E\s*\d+[A-Z]*',  # Signetics/TI SE series
+            'LMC': r'LMC\s*\d+[A-Z]*',  # TI LMC series
+            'TMP': r'T[MN]P\s*\d+[A-Z]*',  # TI temperature sensors
+            'INA': r'INA\s*\d+[A-Z]*',  # TI current sense
+            'OPA': r'[O0]PA\s*\d+[A-Z]*',  # TI op-amps (O→0 confusion)
             'AUCH': r'AUCH\d+[A-Z]*\d*[A-Z]*',  # TI AUCH series
             'M74HC': r'M74HC\d+[A-Z]\d',  # STM 74HC series
+            '74HC': r'74H[CO]\d+[A-Z]*',  # Generic 74HC (C→O confusion)
+            '74LS': r'74[IL]S\d+[A-Z]*',  # 74LS series (L→I confusion)
+            'CD': r'CD\s*\d+[A-Z]*\d*',  # CD4xxx series
+            'ULN': r'ULN\s*\d+[A-Z]*',  # ULN2xxx driver series
+            '2N': r'2N\s*\d+[A-Z]*',  # Transistors (2N2222, etc.)
+            'L293': r'L\s*293[A-Z]*',  # Motor driver
         }
         
         # Manufacturer mappings
         self.mfg_map = {
             'ATMEGA': 'Microchip',
             'ATTINY': 'Microchip',
+            'ATMEL': 'Microchip',
             'PIC': 'Microchip',
+            'MCP': 'Microchip',
             'STM32': 'STMicroelectronics',
+            'M74HC': 'STMicroelectronics',
             'LM': 'Texas Instruments',
+            'LMC': 'Texas Instruments',
             'TL': 'Texas Instruments',
+            'TLC': 'Texas Instruments',
+            'TPS': 'Texas Instruments',
+            'TMP': 'Texas Instruments',
+            'INA': 'Texas Instruments',
+            'OPA': 'Texas Instruments',
             'SN74': 'Texas Instruments',
+            'SN': 'Texas Instruments',
             'ADC': 'Texas Instruments',
             'DAC': 'Texas Instruments',
+            'NE': 'Texas Instruments',
+            'SE': 'Texas Instruments',
+            'AUCH': 'Texas Instruments',
             'CY8C': 'Infineon',
             'CY7C': 'Infineon',
             'MC': 'NXP',
             'LT': 'Analog Devices',
             'AD': 'Analog Devices',
             'MAX': 'Analog Devices',
-            'NE': 'Texas Instruments',
-            'AUCH': 'Texas Instruments',
-            'M74HC': 'STMicroelectronics',
+            '74HC': 'Various',
+            '74LS': 'Various',
+            'CD': 'Texas Instruments',
+            'ULN': 'STMicroelectronics',
+            '2N': 'Various',
+            'L293': 'Texas Instruments',
         }
     
     def authenticate(self, image_path: str) -> Dict:
@@ -204,7 +236,8 @@ class SmartICAuthenticator:
             if ocr_results.get('preprocessing_images'):
                 debug_variants = [(p['name'], p['image']) for p in ocr_results['preprocessing_images']]
             
-            return {
+            # MEMORY CLEANUP: Delete large objects before returning
+            result = {
                 'success': True,
                 'part_number': part_info['part_number'],
                 'normalized_part_number': part_info['part_number'],
@@ -228,6 +261,13 @@ class SmartICAuthenticator:
                 'date_codes': [],
                 'reasons': []
             }
+            
+            # Delete large numpy arrays from ocr_results to free memory
+            if 'preprocessing_images' in ocr_results:
+                del ocr_results['preprocessing_images']
+            del ocr_results, img
+            
+            return result
             
         except Exception as e:
             import traceback
@@ -275,6 +315,9 @@ class SmartICAuthenticator:
                 conf = float(box.conf[0])
                 text_regions.append((x1, y1, x2, y2, conf))
         
+        # MEMORY CLEANUP: Delete YOLO results immediately
+        del results
+        
         logger.info(f"  Found {len(text_regions)} text regions with YOLO")
         return text_regions
     
@@ -319,26 +362,45 @@ class SmartICAuthenticator:
         enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
         
         if not regions:
-            # OPTIMIZED: Use only 2 BEST preprocessing variants for maximum speed
+            # Use multiple preprocessing variants to handle diverse IC images
+            # MEMORY OPTIMIZED: Only store variants needed for debugging, delete intermediate images
             
-            # Variant 1: CLAHE Enhanced (best overall)
+            # Variant 1: CLAHE Enhanced (best overall for normal lighting)
             # Already have enhanced_bgr
             
-            # Variant 2: Adaptive threshold (best for faded text)
+            # Variant 2: Adaptive threshold (best for faded text and uneven lighting)
             thresh_adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                                     cv2.THRESH_BINARY, 11, 2)
             thresh_adaptive_bgr = cv2.cvtColor(thresh_adaptive, cv2.COLOR_GRAY2BGR)
+            del thresh_adaptive  # Free memory immediately
+            
+            # Variant 3: Simple binary threshold with Otsu (best for high contrast)
+            _, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            thresh_otsu_bgr = cv2.cvtColor(thresh_otsu, cv2.COLOR_GRAY2BGR)
+            del thresh_otsu  # Free memory immediately
+            
+            # Variant 4: Morphological operations (good for broken/faint text)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            morph = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+            morph = clahe.apply(morph)
+            morph_bgr = cv2.cvtColor(morph, cv2.COLOR_GRAY2BGR)
+            del morph, kernel  # Free memory immediately
+            
+            # Variant 5: Inverted (for white text on dark background)
+            inverted = cv2.bitwise_not(gray)
+            inverted = clahe.apply(inverted)
+            inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
+            del inverted  # Free memory immediately
+            
+            # MEMORY CLEANUP: Delete gray after all variants are created
+            del gray
             
             # Try variants in order of effectiveness
-            variants = [enhanced_bgr, thresh_adaptive_bgr]
-            variant_names = ['CLAHE Enhanced', 'Adaptive Threshold']
+            variants = [enhanced_bgr, thresh_adaptive_bgr, thresh_otsu_bgr, morph_bgr, inverted_bgr]
+            variant_names = ['CLAHE Enhanced', 'Adaptive Threshold', 'Otsu Binary', 'Morphological', 'Inverted']
             
-            # Store preprocessing images for debug
-            for name, var_img in zip(variant_names, variants):
-                preprocessing_images.append({
-                    'name': name,
-                    'image': var_img.copy()
-                })
+            # MEMORY OPTIMIZED: Don't store all variants - only save the best one later
+            # preprocessing_images will be populated AFTER we find the best variant
             
             best_text_count = 0
             best_results = []
@@ -362,15 +424,15 @@ class SmartICAuthenticator:
                     conf_count = 0
                     
                     for (bbox, text, conf) in results:
-                        if conf > 0.08:  # Slightly higher threshold for speed
+                        if conf > 0.01:  # ULTRA LOW threshold - catch EVERYTHING
                             # Fix common OCR errors
                             text = self._fix_ocr_errors(text)
-                            if text and len(text) > 1:
+                            if text and len(text) >= 1:  # Accept even single characters
                                 variant_text.append(text)
                                 total_conf += conf
                                 conf_count += 1
                                 # Store for visualization
-                                if conf > 0.15:  # Lower threshold for drawing (capture more text)
+                                if conf > 0.01:  # Ultra low threshold for drawing (capture all text)
                                     variant_details.append({
                                         'bbox': bbox,
                                         'text': text,
@@ -380,24 +442,42 @@ class SmartICAuthenticator:
                     # Calculate average confidence for this variant
                     avg_conf = (total_conf / conf_count * 100) if conf_count > 0 else 0.0
                     
-                    # Use the variant that extracted the most text
-                    if len(variant_text) > best_text_count:
+                    # Use the variant that extracted the most text OR best confidence
+                    # Changed: Don't just use text count, also consider confidence
+                    score = len(variant_text) * avg_conf  # Combined score
+                    best_score = best_text_count * best_confidence if best_text_count > 0 else 0
+                    
+                    if score > best_score or (len(variant_text) > best_text_count):
                         best_text_count = len(variant_text)
                         all_text = variant_text
                         ocr_details = variant_details
                         best_variant_name = variant_names[idx]
                         best_confidence = avg_conf
                         
-                        # EARLY TERMINATION: If we got good results, stop immediately
-                        # REDUCED threshold to handle low-confidence but valid detections
-                        if best_text_count >= 3 and avg_conf > 25:
-                            logger.info(f"  ✓ Good OCR results, early stop at: {best_variant_name}")
-                            break
+                        # NO EARLY TERMINATION - Try ALL variants to find the best one
                 except Exception as e:
                     logger.debug(f"OCR variant failed: {e}")
                     continue
             
             logger.info(f"  Best OCR: {best_variant_name} ({best_text_count} items, {best_confidence:.1f}% conf)")
+            
+            # MEMORY OPTIMIZED: Only store the best variant, delete all others
+            best_variant_idx = variant_names.index(best_variant_name) if best_variant_name in variant_names else 0
+            best_variant_img = variants[best_variant_idx]
+            
+            # Store only the best variant for debugging
+            preprocessing_images.append({
+                'name': best_variant_name,
+                'image': best_variant_img.copy()
+            })
+            
+            # Delete ALL variant images to free memory
+            del variants
+            del enhanced_bgr, thresh_adaptive_bgr, thresh_otsu_bgr, morph_bgr, inverted_bgr
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
         else:
             # OCR each YOLO-detected region
             logger.info(f"  OCR on {len(regions)} YOLO regions...")
@@ -548,7 +628,7 @@ class SmartICAuthenticator:
                 match_clean = match.replace(' ', '')
                 # Score based on length and completeness
                 score = len(match_clean)
-                if score > best_score and score >= 4:  # Lowered from 5 to 4 for LM358
+                if score > best_score and score >= 2:  # LOWERED to 2 - catch very short ICs like "NE555"
                     best_score = score
                     best_match = (match_clean, prefix)
         

@@ -108,7 +108,7 @@ Type: filesandordirs; Name: "{app}\debug_output"
 Type: filesandordirs; Name: "{app}\final_production_debug"
 Type: filesandordirs; Name: "{app}\debug_preprocessing"
 Type: filesandordirs; Name: "{app}\production_debug"
-Type: filesandordirs; Name: "{app}\test_images"
+; Type: filesandordirs; Name: "{app}\test_images"  ; KEEP test_images - don't delete
 Type: files; Name: "{app}\yolov8n.pt"
 Type: files; Name: "{app}\*.pt"
 Type: filesandordirs; Name: "{app}\runs"

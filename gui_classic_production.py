@@ -9,14 +9,24 @@ import os
 import cv2
 import torch
 import ctypes
+import tempfile
+import urllib.request
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                              QTextEdit, QTextBrowser, QTabWidget, QGroupBox, QScrollArea, 
                              QMessageBox, QProgressBar, QGridLayout, QSplitter,
                              QCheckBox, QDialog, QTableWidget, QTableWidgetItem, QHeaderView)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QUrl
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QTextCursor, QIcon
+
+# Try to import QWebEngineView for PDF viewing (optional - fallback to browser if not available)
+try:
+    from PyQt5.QtWebEngineWidgets import QWebEngineView
+    WEBENGINE_AVAILABLE = True
+except ImportError:
+    WEBENGINE_AVAILABLE = False
+    print("Warning: QWebEngineView not available - PDF viewing will fall back to system viewer")
 
 # Try to import ultimate authenticator, fallback to fresh YOLO
 try:
@@ -1037,7 +1047,18 @@ class ICAuthenticatorGUI(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 return
             
-            # Clear previous batch results
+            # Clear previous batch results and free memory
+            if self.batch_results:
+                # Delete all old results and force garbage collection
+                for old_result in self.batch_results:
+                    # Clean up any remaining numpy arrays
+                    for key in ['debug_ocr_image', 'debug_variants', 'preprocessing_images']:
+                        if key in old_result:
+                            del old_result[key]
+                del self.batch_results
+                import gc
+                gc.collect()
+            
             self.batch_results = []
             
             # Disable buttons during processing
@@ -1255,7 +1276,7 @@ class ICAuthenticatorGUI(QMainWindow):
                     }
                 """)
                 datasheet_btn.setCursor(Qt.PointingHandCursor)
-                datasheet_btn.clicked.connect(lambda checked, url=datasheet_url: webbrowser.open(url))
+                datasheet_btn.clicked.connect(lambda checked, url=datasheet_url: self.open_datasheet_url(url))
                 datasheet_btn.setToolTip(f"Click to open datasheet:\n{datasheet_url}")
                 table.setCellWidget(idx, 5, datasheet_btn)
             else:
@@ -1752,14 +1773,16 @@ class ICAuthenticatorGUI(QMainWindow):
                 summary_text = self.create_summary_html(result)
                 summary_browser = QTextBrowser()
                 summary_browser.setHtml(summary_text)
-                summary_browser.setOpenExternalLinks(True)
+                summary_browser.setOpenExternalLinks(False)  # Use custom handler for PDFs
+                summary_browser.anchorClicked.connect(lambda url: self.open_datasheet_url(url.toString()))
                 tabs.addTab(summary_browser, "📋 Summary")
                 
                 # Details tab
                 details_text = self.create_details_html(result)
                 details_browser = QTextBrowser()
                 details_browser.setHtml(details_text)
-                details_browser.setOpenExternalLinks(True)
+                details_browser.setOpenExternalLinks(False)  # Use custom handler for PDFs
+                details_browser.anchorClicked.connect(lambda url: self.open_datasheet_url(url.toString()))
                 tabs.addTab(details_browser, "📊 Details")
                 
                 # Debug Images tab
@@ -1829,6 +1852,14 @@ class ICAuthenticatorGUI(QMainWindow):
         date_codes = ', '.join(result.get('date_codes', [])) or 'None'
         datasheet_url = result.get('datasheet_url', '')
         
+        # Create clickable datasheet link that calls our custom handler
+        if datasheet_url:
+            # Use javascript:void(0) to prevent default link behavior
+            # We'll connect this properly through anchorClicked signal
+            datasheet_link = f'<a href="{datasheet_url}" style="color: #4A9EFF; text-decoration: none;">{datasheet_url}</a>'
+        else:
+            datasheet_link = '<span style="color: #888;">Not Found</span>'
+        
         html = f"""
 <html>
 <head>
@@ -1838,6 +1869,8 @@ class ICAuthenticatorGUI(QMainWindow):
     .info-row {{ margin: 8px 0; }}
     .label {{ font-weight: bold; color: #888; }}
     .value {{ color: #fff; }}
+    a {{ color: #4A9EFF; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
 </style>
 </head>
 <body>
@@ -1847,7 +1880,7 @@ class ICAuthenticatorGUI(QMainWindow):
 <div class="info-row"><span class="label">Manufacturer:</span> <span class="value">{manufacturer}</span></div>
 <div class="info-row"><span class="label">Date Codes:</span> <span class="value">{date_codes}</span></div>
 <div class="info-row"><span class="label">Confidence:</span> <span class="value">{confidence}%</span></div>
-<div class="info-row"><span class="label">Datasheet:</span> <span class="value">{'<a href="' + datasheet_url + '">View Datasheet</a>' if datasheet_url else 'Not Found'}</span></div>
+<div class="info-row"><span class="label">Datasheet:</span> <span class="value">{datasheet_link}</span></div>
 
 <h3>Authentication Details</h3>
 """
@@ -2491,6 +2524,140 @@ class ICAuthenticatorGUI(QMainWindow):
         self.ocr_text.clear()
         self.raw_text.clear()
         
+    def open_datasheet_url(self, url):
+        """Open datasheet URL - Use embedded PDF viewer if available, prioritize PDFs over site links"""
+        try:
+            if url.lower().endswith('.pdf'):
+                # It's a PDF - try embedded viewer first, fallback to system viewer
+                if WEBENGINE_AVAILABLE:
+                    try:
+                        # Try embedded PDF viewer
+                        self._show_embedded_pdf(url)
+                        return
+                    except Exception as e:
+                        # Fall back to download + system viewer
+                        pass
+                
+                # Download PDF and open with system viewer
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Opening PDF Datasheet")
+                msg.setText("Downloading PDF datasheet...")
+                msg.setStandardButtons(QMessageBox.NoButton)
+                msg.show()
+                QApplication.processEvents()
+                
+                try:
+                    # Download PDF to temp location
+                    temp_dir = tempfile.gettempdir()
+                    pdf_filename = os.path.basename(url).split('?')[0]  # Remove query params
+                    if not pdf_filename.endswith('.pdf'):
+                        pdf_filename = 'datasheet.pdf'
+                    local_pdf_path = os.path.join(temp_dir, pdf_filename)
+                    
+                    # Download with timeout
+                    import socket
+                    socket.setdefaulttimeout(10)
+                    urllib.request.urlretrieve(url, local_pdf_path)
+                    
+                    msg.close()
+                    
+                    # Open PDF with default system viewer (Adobe, Foxit, etc.)
+                    if sys.platform == 'win32':
+                        os.startfile(local_pdf_path)
+                    elif sys.platform == 'darwin':  # macOS
+                        os.system(f'open "{local_pdf_path}"')
+                    else:  # Linux
+                        os.system(f'xdg-open "{local_pdf_path}"')
+                    
+                except Exception as e:
+                    msg.close()
+                    # Fallback to opening in browser
+                    QMessageBox.warning(self, "Download Failed", 
+                                       f"Could not download PDF locally.\nOpening in browser instead.\n\nError: {str(e)}")
+                    webbrowser.open(url)
+            else:
+                # Regular webpage - open in browser
+                webbrowser.open(url)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open datasheet:\n{str(e)}")
+    
+    def _show_embedded_pdf(self, url):
+        """Show PDF in embedded viewer dialog"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Datasheet Viewer")
+        dialog.setMinimumSize(1200, 900)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Info label
+        info_label = QLabel(f"📄 Loading: {os.path.basename(url)}")
+        info_label.setStyleSheet("font-weight: bold; padding: 10px; background: #2a2a2a;")
+        layout.addWidget(info_label)
+        
+        # Web view for PDF
+        web_view = QWebEngineView()
+        web_view.setUrl(QUrl(url))
+        layout.addWidget(web_view)
+        
+        # Button row
+        button_layout = QHBoxLayout()
+        
+        # Open in system viewer button
+        system_btn = QPushButton("📂 Open in System Viewer")
+        system_btn.clicked.connect(lambda: self._download_and_open_pdf(url))
+        button_layout.addWidget(system_btn)
+        
+        # Open in browser button
+        browser_btn = QPushButton("🌐 Open in Browser")
+        browser_btn.clicked.connect(lambda: webbrowser.open(url))
+        button_layout.addWidget(browser_btn)
+        
+        button_layout.addStretch()
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
+        
+        layout.addLayout(button_layout)
+        
+        dialog.exec_()
+    
+    def _download_and_open_pdf(self, url):
+        """Download PDF and open with system viewer"""
+        try:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Downloading PDF")
+            msg.setText("Downloading...")
+            msg.setStandardButtons(QMessageBox.NoButton)
+            msg.show()
+            QApplication.processEvents()
+            
+            temp_dir = tempfile.gettempdir()
+            pdf_filename = os.path.basename(url).split('?')[0]
+            if not pdf_filename.endswith('.pdf'):
+                pdf_filename = 'datasheet.pdf'
+            local_pdf_path = os.path.join(temp_dir, pdf_filename)
+            
+            import socket
+            socket.setdefaulttimeout(10)
+            urllib.request.urlretrieve(url, local_pdf_path)
+            
+            msg.close()
+            
+            if sys.platform == 'win32':
+                os.startfile(local_pdf_path)
+            elif sys.platform == 'darwin':
+                os.system(f'open "{local_pdf_path}"')
+            else:
+                os.system(f'xdg-open "{local_pdf_path}"')
+                
+        except Exception as e:
+            msg.close()
+            QMessageBox.critical(self, "Error", f"Failed to download PDF:\n{str(e)}")
+    
     def toggle_theme(self):
         """Toggle between dark and light mode"""
         self.dark_mode = not self.dark_mode
@@ -2617,20 +2784,22 @@ class ICAuthenticatorGUI(QMainWindow):
             self.theme_btn.setText("🌙 Dark Mode")
             self.setStyleSheet("""
                 QMainWindow, QWidget {
-                    background-color: #f5f5f5;
+                    background-color: #ffffff;
                     color: #212121;
                 }
                 QGroupBox {
-                    border: 2px solid #ccc;
+                    border: 2px solid #1976d2;
                     border-radius: 5px;
                     margin-top: 10px;
                     font-weight: bold;
                     padding-top: 10px;
+                    color: #1976d2;
                 }
                 QGroupBox::title {
                     subcontrol-origin: margin;
                     left: 10px;
                     padding: 0 5px;
+                    color: #1976d2;
                 }
                 QPushButton {
                     background-color: #1976d2;
@@ -2650,42 +2819,57 @@ class ICAuthenticatorGUI(QMainWindow):
                     background-color: #e0e0e0;
                     color: #9e9e9e;
                 }
-                QTextEdit, QLabel {
+                QTextEdit {
                     background-color: white;
                     color: #212121;
-                    border: 1px solid #ccc;
+                    border: 2px solid #90caf9;
+                    padding: 5px;
+                }
+                QLabel {
+                    background-color: transparent;
+                    color: #212121;
+                    border: none;
                     padding: 5px;
                 }
                 QTabWidget::pane {
-                    border: 1px solid #ccc;
+                    border: 2px solid #1976d2;
+                    background-color: white;
                 }
                 QTabBar::tab {
-                    background-color: #e0e0e0;
-                    color: #212121;
+                    background-color: #e3f2fd;
+                    color: #1976d2;
                     padding: 10px 20px;
-                    border: 1px solid #ccc;
+                    border: 1px solid #90caf9;
+                    font-weight: bold;
                 }
                 QTabBar::tab:selected {
                     background-color: #1976d2;
                     color: white;
                 }
                 QProgressBar {
-                    border: 1px solid #ccc;
+                    border: 2px solid #1976d2;
                     border-radius: 5px;
                     text-align: center;
                     background-color: white;
+                    color: #212121;
                 }
                 QProgressBar::chunk {
                     background-color: #1976d2;
                 }
                 QStatusBar {
-                    background-color: #e0e0e0;
+                    background-color: #e3f2fd;
                     color: #212121;
+                    border-top: 2px solid #1976d2;
+                }
+                QTextBrowser {
+                    background-color: white;
+                    color: #212121;
+                    border: 2px solid #90caf9;
                 }
                 QScrollBar:vertical {
                     background-color: #f5f5f5;
                     width: 14px;
-                    border: 1px solid #ccc;
+                    border: 1px solid #90caf9;
                     border-radius: 7px;
                 }
                 QScrollBar::handle:vertical {
@@ -2708,7 +2892,7 @@ class ICAuthenticatorGUI(QMainWindow):
                 QScrollBar:horizontal {
                     background-color: #f5f5f5;
                     height: 14px;
-                    border: 1px solid #ccc;
+                    border: 1px solid #90caf9;
                     border-radius: 7px;
                 }
                 QScrollBar::handle:horizontal {

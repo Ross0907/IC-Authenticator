@@ -1,24 +1,15 @@
-opencv-python>=4.8.0# IC Authenticator - Production Requirements
+# IC Authenticator - Production Requirements
+# Only dependencies actually used by the application
 
-easyocr>=1.7.0# Only dependencies actually used by the application
+# Core Dependencies (installed first by installer)
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
 
-ultralytics>=8.0.0
-
-torch>=2.0.0# Core Dependencies (installed first by installer)
-
-Pillow>=10.0.0numpy>=1.24.0
-
-numpy>=1.24.0opencv-python-headless>=4.8.0
-
-beautifulsoup4>=4.12.0Pillow>=10.0.0
-
-requests>=2.31.0
-
-PyMuPDF>=1.23.0# GUI
-
-pytesseract>=0.3.10PyQt5>=5.15.0
-
+# GUI
+PyQt5>=5.15.0
 PyQt5-Qt5>=5.15.0
+PyQtWebEngine>=5.15.0
 
 # Deep Learning (CUDA-enabled PyTorch) - Large downloads, installed separately
 --index-url https://download.pytorch.org/whl/cu118
@@ -37,4 +28,10 @@ pdfplumber>=0.10.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+
+# YOLO Object Detection
+ultralytics>=8.0.0
+
+# Other utilities
+PyMuPDF>=1.23.0
 
