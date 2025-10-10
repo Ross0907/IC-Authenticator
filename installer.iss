@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "3.0.2"
+#define MyAppVersion "5.0.0"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -57,11 +57,8 @@ Source: "ICAuthenticator.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Python Application Files
 Source: "gui_classic_production.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "final_production_authenticator.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "enhanced_preprocessing.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "database_manager.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "marking_validator.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "working_web_scraper.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "smart_ic_authenticator.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "batch_authenticator.py"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Configuration & Data Files
 Source: "config.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -70,12 +67,14 @@ Source: "icon.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
+; YOLO Model
+Source: "yolov8n.pt"; DestDir: "{app}"; Flags: ignoreversion
+
 ; Dependencies
 Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install_dependencies.py"; DestDir: "{app}"; Flags: ignoreversion
 
-; Test Images
-Source: "test_images\*"; DestDir: "{app}\test_images"; Flags: ignoreversion recursesubdirs createallsubdirs
+; NOTE: test_images, debug_output folders excluded from deployment
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
@@ -101,9 +100,14 @@ Type: filesandordirs; Name: "{app}\__pycache__"
 Type: filesandordirs; Name: "{app}\*.pyc"
 Type: filesandordirs; Name: "{app}\ic_authentication.db"
 Type: filesandordirs; Name: "{app}\datasheet_cache"
+Type: filesandordirs; Name: "{app}\debug_images"
+Type: filesandordirs; Name: "{app}\debug_output"
 Type: filesandordirs; Name: "{app}\final_production_debug"
 Type: filesandordirs; Name: "{app}\debug_preprocessing"
 Type: filesandordirs; Name: "{app}\production_debug"
+Type: files; Name: "{app}\yolov8n.pt"
+Type: files; Name: "{app}\*.pt"
+Type: filesandordirs; Name: "{app}\runs"
 
 [Code]
 var

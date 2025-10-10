@@ -8,6 +8,7 @@ import os
 import cv2
 import torch
 import ctypes
+from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                              QTextEdit, QTextBrowser, QTabWidget, QGroupBox, QScrollArea, 
@@ -15,7 +16,15 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QCheckBox, QDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QTextCursor, QIcon
-from final_production_authenticator import FinalProductionAuthenticator
+
+# Try to import ultimate authenticator, fallback to fresh YOLO
+try:
+    from smart_ic_authenticator import SmartICAuthenticator as Authenticator
+    USING_ULTIMATE = True
+except ImportError:
+    from fresh_yolo_authenticator import FreshYOLOAuthenticator as Authenticator
+    USING_ULTIMATE = False
+
 from datetime import datetime
 
 
@@ -25,29 +34,31 @@ class ProcessingThread(QThread):
     status = pyqtSignal(str)
     result = pyqtSignal(dict)
     
-    def __init__(self, image_path):
+    def __init__(self, image_path, authenticator):
         super().__init__()
         self.image_path = image_path
+        self.authenticator = authenticator
     
     def run(self):
         """Run the authentication process"""
         try:
-            self.status.emit("🚀 Initializing authentication system...")
+            self.status.emit("🚀 Starting analysis...")
             self.progress.emit(10)
             
-            authenticator = FinalProductionAuthenticator()
+            self.status.emit("📝 Extracting text...")
+            self.progress.emit(40)
             
-            self.status.emit("📝 Extracting text with GPU-accelerated OCR...")
-            self.progress.emit(30)
+            self.status.emit("🔍 Detecting part numbers...")
+            self.progress.emit(60)
             
-            self.status.emit("🔍 Analyzing markings and date codes...")
-            self.progress.emit(50)
+            self.status.emit("� Validating datasheets...")
+            self.progress.emit(80)
             
-            self.status.emit("📚 Searching datasheets...")
-            self.progress.emit(70)
+            self.status.emit("✅ Finalizing...")
+            self.progress.emit(95)
             
-            # Run authentication
-            result = authenticator.authenticate(self.image_path)
+            # Run authentication using provided authenticator instance
+            result = self.authenticator.authenticate(self.image_path)
             
             self.progress.emit(100)
             self.status.emit("✅ Analysis complete!")
@@ -69,9 +80,10 @@ class BatchProcessingThread(QThread):
     batch_result = pyqtSignal(dict)  # Single image result
     complete = pyqtSignal(dict)  # Final summary
     
-    def __init__(self, image_paths):
+    def __init__(self, image_paths, authenticator):
         super().__init__()
         self.image_paths = image_paths
+        self.authenticator = authenticator
         self.results = []
     
     def run(self):
@@ -79,10 +91,15 @@ class BatchProcessingThread(QThread):
         try:
             self.status.emit(f"🚀 Starting batch processing of {len(self.image_paths)} images...")
             
-            authenticator = FinalProductionAuthenticator()
+            # Use provided authenticator instance (models already loaded)
             total = len(self.image_paths)
             
+            # Create debug_output folder
+            os.makedirs('debug_output', exist_ok=True)
+            
             authentic_count = 0
+            likely_authentic_count = 0
+            suspicious_count = 0
             counterfeit_count = 0
             error_count = 0
             
@@ -92,25 +109,32 @@ class BatchProcessingThread(QThread):
                 self.progress.emit(idx, total, filename)
                 
                 try:
-                    result = authenticator.authenticate(image_path)
+                    result = self.authenticator.authenticate(image_path)
                     result['filename'] = filename
                     result['filepath'] = image_path
+                    result['success'] = True
                     
-                    # Convert is_authentic boolean to verdict string
-                    if result.get('success', True):
-                        result['verdict'] = 'AUTHENTIC' if result.get('is_authentic', False) else 'COUNTERFEIT'
-                    else:
-                        result['verdict'] = 'ERROR'
+                    # Generate debug image
+                    try:
+                        debug_path = self.authenticator.save_debug_image(result)
+                        result['debug_image_path'] = debug_path
+                    except Exception as e:
+                        result['debug_image_path'] = None
                     
                     self.results.append(result)
                     
                     # Emit individual result
                     self.batch_result.emit(result)
                     
-                    # Count results
-                    if result['verdict'] == 'AUTHENTIC':
+                    # Count results based on verdict
+                    verdict = result.get('verdict', 'ERROR')
+                    if verdict == 'AUTHENTIC':
                         authentic_count += 1
-                    elif result['verdict'] == 'COUNTERFEIT':
+                    elif verdict == 'LIKELY AUTHENTIC':
+                        likely_authentic_count += 1
+                    elif verdict == 'SUSPICIOUS':
+                        suspicious_count += 1
+                    elif verdict in ['COUNTERFEIT', 'LIKELY COUNTERFEIT']:
                         counterfeit_count += 1
                     else:
                         error_count += 1
@@ -133,12 +157,14 @@ class BatchProcessingThread(QThread):
             summary = {
                 'total': total,
                 'authentic': authentic_count,
+                'likely_authentic': likely_authentic_count,
+                'suspicious': suspicious_count,
                 'counterfeit': counterfeit_count,
                 'errors': error_count,
                 'results': self.results
             }
             
-            self.status.emit(f"✅ Batch processing complete! {authentic_count} authentic, {counterfeit_count} counterfeit, {error_count} errors")
+            self.status.emit(f"✅ Batch processing complete! {authentic_count} authentic, {likely_authentic_count} likely authentic, {suspicious_count} suspicious, {counterfeit_count} counterfeit, {error_count} errors")
             self.complete.emit(summary)
             
         except Exception as e:
@@ -236,6 +262,11 @@ class ICAuthenticatorGUI(QMainWindow):
         self.processing_thread = None
         self.batch_results = []  # Store batch processing results
         self.app_icon = None  # Store icon reference globally
+        
+        # Initialize authenticator once and reuse it (prevents reloading YOLO/EasyOCR models)
+        self.statusBar().showMessage("🚀 Loading models... Please wait...")
+        QApplication.processEvents()  # Update UI immediately
+        self.authenticator = Authenticator()
         
         self.init_ui()
         self.apply_theme()
@@ -535,6 +566,22 @@ class ICAuthenticatorGUI(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         
+        # Image Display Section (NEW)
+        image_group = QGroupBox("IC Image Preview (Click to Zoom)")
+        image_layout = QVBoxLayout()
+        
+        self.result_image_label = ClickableImageLabel()
+        self.result_image_label.setAlignment(Qt.AlignCenter)
+        self.result_image_label.setMinimumHeight(200)
+        self.result_image_label.setMaximumHeight(300)
+        self.result_image_label.setStyleSheet("border: 1px solid #444; background-color: #1a1a1a;")
+        self.result_image_label.setScaledContents(False)
+        self.result_image_label.clicked.connect(self.show_zoomed_image)
+        
+        image_layout.addWidget(self.result_image_label)
+        image_group.setLayout(image_layout)
+        layout.addWidget(image_group)
+        
         # Verdict display
         self.verdict_label = QLabel("Awaiting Analysis...")
         self.verdict_label.setFont(QFont("Arial", 18, QFont.Bold))
@@ -777,8 +824,8 @@ class ICAuthenticatorGUI(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         
-        # Start processing thread
-        self.processing_thread = ProcessingThread(self.current_image_path)
+        # Start processing thread with reusable authenticator instance
+        self.processing_thread = ProcessingThread(self.current_image_path, self.authenticator)
         self.processing_thread.progress.connect(self.update_progress)
         self.processing_thread.status.connect(self.update_status)
         self.processing_thread.result.connect(self.display_results)
@@ -809,23 +856,66 @@ class ICAuthenticatorGUI(QMainWindow):
         if 'processing_time' in results:
             self.process_time.setText(f"{results['processing_time']:.2f}s")
         
+        # Update variants count display
         if 'variants_count' in results:
-            self.variants_used.setText(str(results['variants_count']))
+            count = results['variants_count']
+            self.variants_used.setText(str(count) if count > 0 else "None (direct)")
+        elif 'debug_variants' in results and results['debug_variants']:
+            # Count from debug_variants
+            self.variants_used.setText(str(len(results['debug_variants'])))
         elif 'ocr_details' in results:
-            # Count unique variants
+            # Count unique variants from OCR details
             variants = set(d.get('variant', '') for d in results['ocr_details'])
-            self.variants_used.setText(str(len(variants)))
+            variants.discard('')  # Remove empty strings
+            count = len(variants)
+            self.variants_used.setText(str(count) if count > 0 else "None (direct)")
+        else:
+            self.variants_used.setText("None (direct)")
         
         # Update Summary Tab
         is_authentic = results.get('is_authentic', False)
         confidence = results.get('confidence', 0)
+        verdict = results.get('verdict', 'UNKNOWN')
         
-        if is_authentic:
+        # Load and display image with debug annotations
+        if self.current_image_path and os.path.exists(self.current_image_path):
+            # Generate debug image using the existing authenticator instance
+            try:
+                debug_path = self.authenticator.save_debug_image(results)
+                
+                # Load debug image
+                if debug_path and os.path.exists(debug_path):
+                    pixmap = QPixmap(debug_path)
+                else:
+                    pixmap = QPixmap(self.current_image_path)
+                    
+                if not pixmap.isNull():
+                    # Scale to fit the preview area
+                    scaled_pixmap = pixmap.scaled(600, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.result_image_label.setPixmap(scaled_pixmap)
+                    self.result_image_label.full_pixmap = pixmap  # Store full size for zoom
+            except Exception as e:
+                print(f"Error loading image: {e}")
+        
+        # Map verdict to display text and color
+        if verdict == 'AUTHENTIC':
             verdict_text = f"✅ AUTHENTIC\nConfidence: {confidence}%"
             verdict_color = "#2d5016"
-        else:
-            verdict_text = f"❌ COUNTERFEIT/SUSPICIOUS\nConfidence: {confidence}%"
+        elif verdict == 'LIKELY AUTHENTIC':
+            verdict_text = f"✅ LIKELY AUTHENTIC\nConfidence: {confidence}%"
+            verdict_color = "#3d6020"
+        elif verdict == 'SUSPICIOUS':
+            verdict_text = f"⚠️ SUSPICIOUS\nConfidence: {confidence}%"
+            verdict_color = "#6b5416"
+        elif verdict == 'LIKELY COUNTERFEIT':
+            verdict_text = f"❌ LIKELY COUNTERFEIT\nConfidence: {confidence}%"
             verdict_color = "#5c1010"
+        elif verdict == 'COUNTERFEIT':
+            verdict_text = f"❌ COUNTERFEIT\nConfidence: {confidence}%"
+            verdict_color = "#4c0000"
+        else:
+            verdict_text = f"❓ {verdict}\nConfidence: {confidence}%"
+            verdict_color = "#444444"
             
         self.verdict_label.setText(verdict_text)
         self.verdict_label.setStyleSheet(f"padding: 20px; border: 2px solid #444; border-radius: 5px; background-color: {verdict_color};")
@@ -957,8 +1047,8 @@ class ICAuthenticatorGUI(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_bar.setMaximum(len(image_paths))
             
-            # Start batch processing thread
-            self.batch_thread = BatchProcessingThread(image_paths)
+            # Start batch processing thread with reusable authenticator instance
+            self.batch_thread = BatchProcessingThread(image_paths, self.authenticator)
             self.batch_thread.progress.connect(self.update_batch_progress)
             self.batch_thread.status.connect(self.update_status)
             self.batch_thread.batch_result.connect(self.handle_batch_result)
@@ -971,9 +1061,44 @@ class ICAuthenticatorGUI(QMainWindow):
         self.status_label.setText(f"Processing {current}/{total}: {filename}")
     
     def handle_batch_result(self, result):
-        """Handle individual result from batch processing"""
-        # Store result for individual viewing later
+        """Handle individual result from batch processing - OPTIMIZED for memory"""
+        # MEMORY FIX: Save debug images to disk immediately and replace with file paths
+        # This prevents storing large numpy arrays in memory
+        
+        image_path = result.get('image_path', '')
+        image_name = Path(image_path).stem if image_path else f"image_{len(self.batch_results)}"
+        
+        # Save debug OCR image to disk if present
+        if result.get('debug_ocr_image') is not None:
+            ocr_image_path = f"debug_output/debug_{image_name}_ocr.png"
+            Path("debug_output").mkdir(exist_ok=True)
+            cv2.imwrite(ocr_image_path, result['debug_ocr_image'])
+            result['debug_ocr_image_path'] = ocr_image_path  # Store file path instead
+            del result['debug_ocr_image']  # Remove numpy array from memory
+        
+        # Save debug variant images to disk if present
+        if result.get('debug_variants'):
+            variant_paths = []
+            for idx, (name, img) in enumerate(result['debug_variants']):
+                variant_path = f"debug_output/debug_{image_name}_variant_{idx}_{name.replace(' ', '_')}.png"
+                cv2.imwrite(variant_path, img)
+                variant_paths.append((name, variant_path))
+            result['debug_variant_paths'] = variant_paths  # Store file paths
+            del result['debug_variants']  # Remove numpy arrays from memory
+        
+        # Save preprocessing images to disk if present
+        if result.get('preprocessing_images'):
+            for preproc in result['preprocessing_images']:
+                if 'image' in preproc:
+                    del preproc['image']  # Remove numpy arrays
+            del result['preprocessing_images']  # Clean up
+        
+        # Store result with file paths only (minimal memory usage)
         self.batch_results.append(result)
+        
+        # Force garbage collection to free memory immediately
+        import gc
+        gc.collect()
     
     def batch_complete(self, summary):
         """Handle completion of batch processing"""
@@ -991,9 +1116,11 @@ class ICAuthenticatorGUI(QMainWindow):
         
         # Display summary
         total = summary['total']
-        authentic = summary['authentic']
-        counterfeit = summary['counterfeit']
-        errors = summary['errors']
+        authentic = summary.get('authentic', 0)
+        likely_authentic = summary.get('likely_authentic', 0)
+        suspicious = summary.get('suspicious', 0)
+        counterfeit = summary.get('counterfeit', 0)
+        errors = summary.get('errors', 0)
         
         # Create dialog with table widget
         dialog = QDialog(self)
@@ -1004,7 +1131,7 @@ class ICAuthenticatorGUI(QMainWindow):
         
         # Summary label
         summary_label = QLabel(f"✅ Successfully processed {total} images!\n"
-                              f"✅ {authentic} Authentic  |  ❌ {counterfeit} Counterfeit  |  ⚠️ {errors} Errors\n"
+                              f"✅ {authentic} Authentic  |  ⚠️ {counterfeit} Counterfeit  |  ⚠️ {errors} Errors\n"
                               f"Click 'View' button to see detailed results and debug images")
         summary_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 10px;")
         layout.addWidget(summary_label)
@@ -1012,16 +1139,22 @@ class ICAuthenticatorGUI(QMainWindow):
         # Create table widget
         table = QTableWidget()
         table.setRowCount(len(self.batch_results))
-        table.setColumnCount(6)
-        table.setHorizontalHeaderLabels(['', 'Filename', 'Verdict', 'Confidence', 'Part Number', 'Action'])
+        table.setColumnCount(7)
+        table.setHorizontalHeaderLabels(['', 'Filename', 'Verdict', 'Confidence', 'Part Number', 'Datasheet', 'Action'])
         
-        # Set column widths
-        table.setColumnWidth(0, 40)  # Icon
-        table.setColumnWidth(1, 300)  # Filename
-        table.setColumnWidth(2, 120)  # Verdict
-        table.setColumnWidth(3, 100)  # Confidence
-        table.setColumnWidth(4, 150)  # Part Number
-        table.setColumnWidth(5, 100)  # Action
+        # Set column widths - make them wider to prevent cutoff
+        table.setColumnWidth(0, 40)   # Icon
+        table.setColumnWidth(1, 300)  # Filename (increased)
+        table.setColumnWidth(2, 150)  # Verdict (increased)
+        table.setColumnWidth(3, 90)   # Confidence
+        table.setColumnWidth(4, 180)  # Part Number (increased)
+        table.setColumnWidth(5, 120)  # Datasheet (increased)
+        table.setColumnWidth(6, 100)  # Action
+        
+        # Make table resize to fit contents
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setWordWrap(False)
+        table.resizeRowsToContents()
         
         # Configure table
         table.horizontalHeader().setStretchLastSection(False)
@@ -1060,11 +1193,17 @@ class ICAuthenticatorGUI(QMainWindow):
             confidence = result.get('confidence', 0)
             part_number = result.get('normalized_part_number') or result.get('part_number') or 'N/A'
             
-            # Icon cell
+            # Icon cell with proper color coding
             if verdict == 'AUTHENTIC':
                 icon_text = '✅'
                 verdict_color = QColor(76, 175, 80)  # Green
-            elif verdict == 'COUNTERFEIT':
+            elif verdict == 'LIKELY AUTHENTIC':
+                icon_text = '✅'
+                verdict_color = QColor(156, 204, 101)  # Light Green
+            elif verdict == 'SUSPICIOUS':
+                icon_text = '⚠️'
+                verdict_color = QColor(255, 167, 38)  # Orange
+            elif verdict in ['COUNTERFEIT', 'LIKELY COUNTERFEIT']:
                 icon_text = '❌'
                 verdict_color = QColor(244, 67, 54)  # Red
             else:
@@ -1093,6 +1232,13 @@ class ICAuthenticatorGUI(QMainWindow):
             part_item = QTableWidgetItem(part_number)
             table.setItem(idx, 4, part_item)
             
+            # Datasheet status
+            datasheet_found = result.get('datasheet_found', False)
+            datasheet_item = QTableWidgetItem("✅ Found" if datasheet_found else "❌ Not Found")
+            datasheet_item.setForeground(QColor(76, 175, 80) if datasheet_found else QColor(244, 67, 54))
+            datasheet_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(idx, 5, datasheet_item)
+            
             # View button
             view_btn = QPushButton("🔍 View")
             view_btn.setStyleSheet("""
@@ -1109,7 +1255,7 @@ class ICAuthenticatorGUI(QMainWindow):
                 }
             """)
             view_btn.clicked.connect(lambda checked, i=idx: self.view_batch_result_by_index(i))
-            table.setCellWidget(idx, 5, view_btn)
+            table.setCellWidget(idx, 6, view_btn)
         
         layout.addWidget(table)
         
@@ -1499,6 +1645,37 @@ class ICAuthenticatorGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to view result:\n{str(e)}")
     
+    def view_raw_data_by_index(self, idx):
+        """View raw data for individual result from batch processing"""
+        try:
+            if 0 <= idx < len(self.batch_results):
+                result = self.batch_results[idx]
+                
+                # Create raw data dialog
+                dialog = QDialog(self)
+                dialog.setWindowTitle(f"Raw Data: {result.get('filename', 'Unknown')}")
+                dialog.setMinimumSize(800, 600)
+                
+                layout = QVBoxLayout(dialog)
+                
+                # Raw data browser
+                raw_browser = QTextBrowser()
+                raw_text = self.create_raw_data_text(result)
+                raw_browser.setPlainText(raw_text)
+                raw_browser.setFont(QFont("Consolas", 9))
+                layout.addWidget(raw_browser)
+                
+                # Close button
+                close_btn = QPushButton("Close")
+                close_btn.clicked.connect(dialog.accept)
+                layout.addWidget(close_btn)
+                
+                dialog.exec_()
+                
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Error", f"Failed to view raw data:\n{str(e)}\n\n{traceback.format_exc()}")
+    
     def view_batch_result_by_index(self, idx):
         """View individual result from batch processing by index"""
         try:
@@ -1519,8 +1696,14 @@ class ICAuthenticatorGUI(QMainWindow):
                 if verdict == 'AUTHENTIC':
                     header_text = f"✅ AUTHENTIC - Confidence: {confidence}%"
                     header_color = "#4CAF50"
-                elif verdict == 'COUNTERFEIT':
-                    header_text = f"❌ COUNTERFEIT - Confidence: {confidence}%"
+                elif verdict == 'LIKELY AUTHENTIC':
+                    header_text = f"✅ LIKELY AUTHENTIC - Confidence: {confidence}%"
+                    header_color = "#9CCC65"
+                elif verdict == 'SUSPICIOUS':
+                    header_text = f"⚠️ SUSPICIOUS - Confidence: {confidence}%"
+                    header_color = "#FFA726"
+                elif verdict in ['COUNTERFEIT', 'LIKELY COUNTERFEIT']:
+                    header_text = f"❌ {verdict} - Confidence: {confidence}%"
                     header_color = "#F44336"
                 else:
                     header_text = f"⚠️ ERROR - Confidence: {confidence}%"
@@ -1548,7 +1731,40 @@ class ICAuthenticatorGUI(QMainWindow):
                 tabs.addTab(details_browser, "📊 Details")
                 
                 # Debug Images tab
-                if result.get('debug_variants') or result.get('debug_ocr_image') is not None:
+                debug_image_path = result.get('debug_image_path')
+                if debug_image_path and os.path.exists(debug_image_path):
+                    debug_widget = QWidget()
+                    debug_layout = QVBoxLayout(debug_widget)
+                    
+                    # Add debug image
+                    debug_label = QLabel("Debug Image with OCR Bounding Boxes (Click to Zoom):")
+                    debug_label.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 5px;")
+                    debug_layout.addWidget(debug_label)
+                    
+                    # Load and display debug image - make it clickable
+                    pixmap = QPixmap(debug_image_path)
+                    if not pixmap.isNull():
+                        # Create clickable image label
+                        img_label = ClickableImageLabel()
+                        img_label.full_pixmap = pixmap
+                        img_label.image_title = f"Debug: {result.get('filename', 'Unknown')}"
+                        img_label.clicked.connect(self.show_zoomed_image)
+                        
+                        # Scale image to fit
+                        scaled_pixmap = pixmap.scaled(1400, 700, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        img_label.setPixmap(scaled_pixmap)
+                        img_label.setAlignment(Qt.AlignCenter)
+                        img_label.setCursor(Qt.PointingHandCursor)
+                        img_label.setToolTip("Click to view full size and zoom")
+                        
+                        # Add to scroll area
+                        scroll = QScrollArea()
+                        scroll.setWidget(img_label)
+                        scroll.setWidgetResizable(True)
+                        debug_layout.addWidget(scroll)
+                    
+                    tabs.addTab(debug_widget, "🔍 Debug Images")
+                elif result.get('debug_variants') or result.get('debug_ocr_image') is not None:
                     debug_widget = self.create_debug_images_widget(result)
                     tabs.addTab(debug_widget, "🔍 Debug Images")
                 
@@ -1556,6 +1772,7 @@ class ICAuthenticatorGUI(QMainWindow):
                 raw_text = self.create_raw_data_text(result)
                 raw_browser = QTextBrowser()
                 raw_browser.setPlainText(raw_text)
+                raw_browser.setFont(QFont("Consolas", 9))
                 tabs.addTab(raw_browser, "📄 Raw Data")
                 
                 layout.addWidget(tabs)
@@ -1680,8 +1897,49 @@ class ICAuthenticatorGUI(QMainWindow):
         row = 0
         col = 0
         
-        # Show OCR detection image first
-        if result.get('debug_ocr_image') is not None:
+        # Show OCR detection image first - LOAD FROM DISK to save memory
+        if result.get('debug_ocr_image_path'):
+            label = QLabel("OCR Text Detection")
+            label.setStyleSheet("font-weight: bold; color: #4A9EFF; font-size: 12pt;")
+            grid.addWidget(label, row, 0, 1, 3)
+            row += 1
+            
+            # Load image from disk (not from memory)
+            ocr_img = cv2.imread(result['debug_ocr_image_path'])
+            
+            if ocr_img is not None:
+                # Convert cv2 image to QPixmap
+                if len(ocr_img.shape) == 2:  # Grayscale
+                    height, width = ocr_img.shape
+                    bytes_per_line = width
+                    q_img = QImage(ocr_img.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+                else:  # Color
+                    height, width, channel = ocr_img.shape
+                    bytes_per_line = 3 * width
+                    q_img = QImage(ocr_img.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+                
+                pixmap = QPixmap.fromImage(q_img)
+                
+                # Scale to reasonable size for display
+                scaled_pixmap = pixmap.scaled(800, 600, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                
+                img_label = QLabel()
+                img_label.setPixmap(scaled_pixmap)
+                img_label.setAlignment(Qt.AlignCenter)
+                img_label.setStyleSheet("border: 2px solid #4A9EFF; background-color: #1a1a1a;")
+                img_label.setCursor(Qt.PointingHandCursor)
+                img_label.setToolTip("Click to zoom")
+                
+                # Make clickable for zoom
+                img_label.mousePressEvent = lambda event, p=pixmap: self.show_zoomed_image(p, "OCR Text Detection")
+                
+                grid.addWidget(img_label, row, 0, 1, 3)
+                row += 1
+                
+                # Clean up loaded image
+                del ocr_img
+        # Fallback: check if debug_ocr_image exists (old format - shouldn't happen with new code)
+        elif result.get('debug_ocr_image') is not None:
             label = QLabel("OCR Text Detection")
             label.setStyleSheet("font-weight: bold; color: #4A9EFF; font-size: 12pt;")
             grid.addWidget(label, row, 0, 1, 3)
@@ -1963,67 +2221,77 @@ class ICAuthenticatorGUI(QMainWindow):
             self.ocr_group.setVisible(False)
         
         # SECTION 2: Preprocessing variants (SECOND)
-        if self.show_preprocessed_cb.isChecked() and 'debug_variants' in results:
+        if self.show_preprocessed_cb.isChecked():
             self.preprocessing_group.setVisible(True)
-            variants = results['debug_variants']
             
-            # Add subtitle
-            subtitle = QLabel(f"Showing {len(variants[:8])} preprocessing variants used for text extraction:")
-            subtitle.setStyleSheet("font-size: 9pt; padding: 5px; color: #888; font-style: italic;")
-            self.preprocessing_layout.addWidget(subtitle)
-            
-            # Create grid for variants
-            grid_container = QWidget()
-            grid_layout = QGridLayout(grid_container)
-            grid_layout.setSpacing(10)
-            
-            row, col = 0, 0
-            max_cols = 3
-            
-            for idx, (name, img) in enumerate(variants[:8]):  # Show first 8 variants
-                # Container for each variant
-                variant_widget = QWidget()
-                variant_layout = QVBoxLayout(variant_widget)
-                variant_layout.setSpacing(2)
+            # Check if preprocessing variants exist
+            if 'debug_variants' in results and results['debug_variants']:
+                variants = results['debug_variants']
                 
-                # Variant name label
-                name_label = QLabel(f"{idx+1}. {name}")
-                name_label.setStyleSheet("font-weight: bold; font-size: 9pt; padding: 3px; color: #FFA726;")
-                name_label.setAlignment(Qt.AlignCenter)
-                variant_layout.addWidget(name_label)
+                # Add subtitle
+                subtitle = QLabel(f"Showing {len(variants[:8])} preprocessing variants used for text extraction:")
+                subtitle.setStyleSheet("font-size: 9pt; padding: 5px; color: #888; font-style: italic;")
+                self.preprocessing_layout.addWidget(subtitle)
                 
-                # Convert and display image with clickable zoom
-                img_label = ClickableImageLabel()
-                img_label.setAlignment(Qt.AlignCenter)
+                # Create grid for variants
+                grid_container = QWidget()
+                grid_layout = QGridLayout(grid_container)
+                grid_layout.setSpacing(10)
                 
-                # Convert image to QPixmap
-                if len(img.shape) == 2:  # Grayscale
-                    h, w = img.shape
-                    q_image = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
-                else:  # BGR
-                    h, w, ch = img.shape
-                    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    q_image = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
+                row, col = 0, 0
+                max_cols = 3
                 
-                # Scale to thumbnail size
-                full_pixmap = QPixmap.fromImage(q_image)
-                scaled_pixmap = full_pixmap.scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                img_label.setPixmap(scaled_pixmap)
-                img_label.set_image(full_pixmap, f"Preprocessing: {name}")
-                img_label.clicked.connect(self.show_image_viewer)
-                img_label.setStyleSheet("border: 1px solid #444; padding: 3px; background: #2b2b2b;")
+                for idx, (name, img) in enumerate(variants[:8]):  # Show first 8 variants
+                    # Container for each variant
+                    variant_widget = QWidget()
+                    variant_layout = QVBoxLayout(variant_widget)
+                    variant_layout.setSpacing(2)
+                    
+                    # Variant name label
+                    name_label = QLabel(f"{idx+1}. {name}")
+                    name_label.setStyleSheet("font-weight: bold; font-size: 9pt; padding: 3px; color: #FFA726;")
+                    name_label.setAlignment(Qt.AlignCenter)
+                    variant_layout.addWidget(name_label)
+                    
+                    # Convert and display image with clickable zoom
+                    img_label = ClickableImageLabel()
+                    img_label.setAlignment(Qt.AlignCenter)
+                    
+                    # Convert image to QPixmap
+                    if len(img.shape) == 2:  # Grayscale
+                        h, w = img.shape
+                        q_image = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+                    else:  # BGR
+                        h, w, ch = img.shape
+                        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        q_image = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
+                    
+                    # Scale to thumbnail size
+                    full_pixmap = QPixmap.fromImage(q_image)
+                    scaled_pixmap = full_pixmap.scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    img_label.setPixmap(scaled_pixmap)
+                    img_label.set_image(full_pixmap, f"Preprocessing: {name}")
+                    img_label.clicked.connect(self.show_image_viewer)
+                    img_label.setStyleSheet("border: 1px solid #444; padding: 3px; background: #2b2b2b;")
+                    
+                    variant_layout.addWidget(img_label)
+                    
+                    # Add to grid
+                    grid_layout.addWidget(variant_widget, row, col)
+                    
+                    col += 1
+                    if col >= max_cols:
+                        col = 0
+                        row += 1
                 
-                variant_layout.addWidget(img_label)
-                
-                # Add to grid
-                grid_layout.addWidget(variant_widget, row, col)
-                
-                col += 1
-                if col >= max_cols:
-                    col = 0
-                    row += 1
-            
-            self.preprocessing_layout.addWidget(grid_container)
+                self.preprocessing_layout.addWidget(grid_container)
+            else:
+                # Show message when no preprocessing was needed
+                no_preprocessing_label = QLabel("✅ No preprocessing needed - image quality was sufficient for direct text extraction")
+                no_preprocessing_label.setStyleSheet("font-size: 11pt; padding: 20px; color: #4CAF50; font-weight: bold;")
+                no_preprocessing_label.setAlignment(Qt.AlignCenter)
+                no_preprocessing_label.setWordWrap(True)
+                self.preprocessing_layout.addWidget(no_preprocessing_label)
         else:
             self.preprocessing_group.setVisible(False)
         

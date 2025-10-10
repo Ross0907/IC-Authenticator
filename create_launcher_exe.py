@@ -172,14 +172,14 @@ result = subprocess.run([
 ], capture_output=True, text=True)
 
 if result.returncode == 0:
-    print("\n✓ Successfully created ICAuthenticator.exe")
+    print("\n[OK] Successfully created ICAuthenticator.exe")
     print("\nLocation: dist\\ICAuthenticator.exe")
     
     # Copy the exe to the current directory
     import shutil
     if os.path.exists('dist\\ICAuthenticator.exe'):
         shutil.copy2('dist\\ICAuthenticator.exe', 'ICAuthenticator.exe')
-        print("\n✓ Copied to current directory")
+        print("\n[OK] Copied to current directory")
         
         # Clean up build files
         if os.path.exists('launcher.py'):
@@ -189,6 +189,6 @@ if result.returncode == 0:
             
         print("\nICAuthenticator.exe is ready for the installer!")
 else:
-    print("\n✗ Failed to create executable")
+    print("\n[ERROR] Failed to create executable")
     print(result.stderr)
     sys.exit(1)
