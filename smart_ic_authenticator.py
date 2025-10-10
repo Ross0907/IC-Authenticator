@@ -573,8 +573,42 @@ class SmartICAuthenticator:
             'prefix': None
         }
     
+    def _validate_url(self, url: str, expect_pdf: bool = False) -> bool:
+        """Validate that a URL is accessible and returns valid content (not 404)
+        
+        Args:
+            url: URL to validate
+            expect_pdf: If True, also check that content-type is PDF
+        
+        Returns:
+            True if URL is valid and accessible, False otherwise
+        """
+        try:
+            # Use longer timeout for PDFs (5s) vs product pages (2s)
+            timeout = 5 if expect_pdf or url.endswith('.pdf') else 2
+            response = self.session.head(url, timeout=timeout, allow_redirects=True)
+            
+            # Check status code
+            if response.status_code != 200:
+                logger.debug(f"    URL validation failed: {response.status_code} - {url}")
+                return False
+            
+            # If expecting PDF, check content type
+            if expect_pdf:
+                content_type = response.headers.get('Content-Type', '').lower()
+                if 'pdf' not in content_type and not url.endswith('.pdf'):
+                    logger.debug(f"    Not a PDF: {content_type} - {url}")
+                    return False
+            
+            logger.debug(f"    ✓ Valid URL: {url}")
+            return True
+            
+        except Exception as e:
+            logger.debug(f"    URL validation error: {e}")
+            return False
+    
     def _find_datasheet(self, part_number: str, manufacturer: str) -> Dict:
-        """Intelligent datasheet finding"""
+        """Intelligent datasheet finding with URL validation"""
         logger.info(f"  Searching for {part_number} datasheet...")
         
         # Check cache first
@@ -587,7 +621,7 @@ class SmartICAuthenticator:
                 'marking_info': self._extract_marking_from_pdf(str(cached_file))
             }
         
-        # Try manufacturer-specific search with increased timeout
+        # Try manufacturer-specific search with validation
         result = None
         try:
             if 'Microchip' in manufacturer or 'Atmel' in manufacturer:
@@ -610,18 +644,18 @@ class SmartICAuthenticator:
             result = None
         
         if result and result.get('found'):
-            logger.info(f"  ✓ Datasheet found")
+            logger.info(f"  ✓ Datasheet found: {result['url']}")
             # Try to download and cache (but don't fail if this doesn't work)
             # Only download if it's a direct PDF link, not a product page
             try:
                 url = result['url']
-                # Only download if it's a PDF file (not HTML product pages) - OPTIMIZED timeout
+                # Only download if it's a PDF file (not HTML product pages)
                 if url.endswith('.pdf') or 'pdf' in url.lower():
-                    # Check file size first with HEAD request - REDUCED timeout
-                    head_resp = self.session.head(url, timeout=0.5)
+                    # Check file size first with HEAD request
+                    head_resp = self.session.head(url, timeout=1)
                     content_length = int(head_resp.headers.get('content-length', 0))
                     
-                    # Only download if file is reasonable size (< 10MB) - REDUCED timeout
+                    # Only download if file is reasonable size (< 10MB)
                     if content_length > 0 and content_length < 10 * 1024 * 1024:
                         pdf_content = self.session.get(url, timeout=1.0, stream=True).content
                         cached_file.write_bytes(pdf_content)
@@ -659,205 +693,329 @@ class SmartICAuthenticator:
         return {'found': False}
     
     def _search_microchip(self, part: str) -> Dict:
-        """Search Microchip datasheets - OPTIMIZED"""
-        # Try direct product page
-        base = re.sub(r'[^A-Z0-9]', '', part).upper()
+        """Search Microchip/Atmel datasheets with comprehensive validation
         
-        # Try only most common URL patterns with 0.5s timeout
-        urls = [
-            f"https://www.microchip.com/en-us/product/{base.lower()}",
-            f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
+        Microchip uses pattern: www.microchip.com/en-us/product/{part-number}
+        Direct PDF: ww1.microchip.com/downloads/en/DeviceDoc/{part-number}.pdf
+        """
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"  Searching Microchip for: {base}")
+        
+        # Common Microchip URL patterns to try
+        urls_to_try = []
+        
+        # Pattern 1: Direct product page (most reliable)
+        urls_to_try.append(f"https://www.microchip.com/en-us/product/{base}")
+        
+        # Pattern 2: For PIC parts specifically  
+        if base.startswith('PIC'):
+            # PIC16F877A → try PIC16F877A, PIC16F877
+            urls_to_try.extend([
+                f"https://www.microchip.com/en-us/product/{base}",
+                f"https://www.microchip.com/en-us/product/{base[:-1]}" if len(base) > 8 else None,
+            ])
+        
+        # Pattern 3: For ATMEGA/ATTINY parts
+        if base.startswith(('ATMEGA', 'ATTINY')):
+            # ATMEGA328P → atmega328p
+            urls_to_try.extend([
+                f"https://www.microchip.com/en-us/product/{base.lower()}",
+                f"https://www.microchip.com/en-us/product/at{base[2:].lower()}",  # ATMEGA328P → atmega328p
+            ])
+        
+        # Remove None values
+        urls_to_try = [url for url in urls_to_try if url]
+        
+        # Try each URL with validation
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found Microchip datasheet: {url}")
+                return {'found': True, 'url': url}
+        
+        # Fallback: Try Digikey/Octopart aggregators
+        fallback_urls = [
+            f"https://www.digikey.com/en/products/detail/{base}",
+            f"https://octopart.com/search?q={base}",
         ]
         
-        for url in urls:
-            try:
-                r = self.session.head(url, timeout=0.5, allow_redirects=True)
-                if r.status_code == 200:
-                    logger.debug(f"  Found Microchip resource: {url}")
-                    return {'found': True, 'url': url}
-            except Exception as e:
-                logger.debug(f"Microchip search failed for {url}: {e}")
-                continue
+        for url in fallback_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
         
+        logger.debug(f"  ✗ Microchip datasheet not found for {base}")
         return {'found': False}
     
     def _search_ti(self, part: str) -> Dict:
-        """Search Texas Instruments datasheets"""
+        """Search Texas Instruments datasheets with comprehensive validation
+        
+        TI uses patterns:
+        - Direct PDF: www.ti.com/lit/ds/symlink/{part}.pdf
+        - Product page: www.ti.com/product/{part}
+        """
         base = re.sub(r'[^A-Z0-9]', '', part).upper()
+        logger.debug(f"  Searching TI for: {base}")
         
-        # Handle AUCH prefix (AUC HC series)
-        if base.startswith('AUCH'):
-            # AUCH16244X → try SN74AUCH16244, AUCH16244, AUC16244
-            variants_to_try = [
-                base,  # AUCH16244X
-                base[:-1] if base[-1] == 'X' else base,  # AUCH16244
-                'SN74' + base,  # SN74AUCH16244X
-                'SN74' + base[:-1] if base[-1] == 'X' else 'SN74' + base,  # SN74AUCH16244
-                base.replace('AUCH', 'AUC'),  # AUC16244X
-            ]
-        else:
-            # Regular processing
-            # Remove single-letter package suffixes
-            clean = base
-            if len(base) > 4 and base[-1] in 'NPDMX':
-                clean = base[:-1]
-            
-            # Remove multi-letter package suffixes
-            for suffix in ['CCN', 'CN', 'PW', 'PWR', 'DW', 'DR', 'DGK', 'DBV', 'DCK']:
-                if clean.endswith(suffix) and len(clean) - len(suffix) >= 4:
-                    clean = clean[:-len(suffix)]
-                    break
-            
-            variants_to_try = [base, clean]
+        # Normalize part number - remove package suffixes
+        clean = base
+        if len(base) > 4 and base[-1] in 'NPDMX':
+            clean = base[:-1]
         
-        # Try direct PDF symlinks first (faster and more reliable) - OPTIMIZED with 0.5s timeout
-        for variant in variants_to_try[:1]:  # Only try first variant for speed
-            for suffix in ['', '-n']:  # Only try main and -n variant
-                try:
-                    pdf_url = f"https://www.ti.com/lit/ds/symlink/{variant.lower()}{suffix}.pdf"
-                    r = self.session.head(pdf_url, timeout=0.5, allow_redirects=True)
-                    if r.status_code == 200 and 'pdf' in r.headers.get('Content-Type', '').lower():
-                        logger.debug(f"  Found TI datasheet: {pdf_url}")
-                        return {'found': True, 'url': pdf_url}
-                except Exception as e:
-                    logger.debug(f"TI PDF failed for {variant}{suffix}: {e}")
-                    continue
+        # Remove multi-letter package suffixes
+        for suffix in ['CCN', 'CN', 'PW', 'PWR', 'DW', 'DR', 'DGK', 'DBV', 'DCK', 'DGV']:
+            if clean.endswith(suffix) and len(clean) - len(suffix) >= 3:
+                clean = clean[:-len(suffix)]
+                break
         
-        # Try product page - OPTIMIZED with 0.5s timeout
-        for variant in variants_to_try[:1]:  # Only try first variant
-            try:
-                url = f"https://www.ti.com/product/{variant.lower()}"
-                r = self.session.head(url, timeout=0.5, allow_redirects=True)
-                if r.status_code == 200:
-                    logger.debug(f"  Found TI product page: {url}")
-                    return {'found': True, 'url': url}
-            except Exception as e:
-                logger.debug(f"TI product page failed for {variant}: {e}")
+        urls_to_try = []
         
-        # Last resort: try aggregator for TI parts - OPTIMIZED with 0.5s timeout
-        logger.debug(f"  TI not found, trying aggregator for {base}")
-        try:
-            agg_url = f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
-            r = self.session.head(agg_url, timeout=0.5, allow_redirects=True)
-            if r.status_code == 200:
-                logger.debug(f"  Found on aggregator: {agg_url}")
-                return {'found': True, 'url': agg_url}
-        except Exception as e:
-            logger.debug(f"  Aggregator failed: {e}")
+        # Pattern 1: Direct PDF symlinks (most reliable for TI)
+        for part_variant in [clean, base]:
+            urls_to_try.extend([
+                f"https://www.ti.com/lit/ds/symlink/{part_variant.lower()}.pdf",
+                f"https://www.ti.com/lit/gpn/{part_variant.lower()}",  # General product page
+            ])
         
+        # Pattern 2: Product pages
+        for part_variant in [clean, base]:
+            urls_to_try.append(f"https://www.ti.com/product/{part_variant.lower()}")
+        
+        # Pattern 3: For specific TI families
+        if base.startswith('LM'):
+            # LM358 → lm358, lm358n
+            urls_to_try.extend([
+                f"https://www.ti.com/lit/ds/symlink/{clean.lower()}.pdf",
+                f"https://www.ti.com/product/{clean}",
+            ])
+        
+        if base.startswith('SN74'):
+            # SN74HC595N → sn74hc595
+            urls_to_try.extend([
+                f"https://www.ti.com/lit/ds/symlink/{clean.lower()}.pdf",
+                f"https://www.ti.com/product/{clean}",
+            ])
+        
+        if base.startswith(('NE', 'SE')):
+            # NE555 → ne555
+            urls_to_try.extend([
+                f"https://www.ti.com/lit/ds/symlink/{base.lower()}.pdf",
+                f"https://www.ti.com/product/{base}",
+            ])
+        
+        # For ADC/DAC parts
+        if base.startswith(('ADC', 'DAC')):
+            # ADC0831 → adc0831
+            urls_to_try.extend([
+                f"https://www.ti.com/lit/ds/symlink/{base.lower()}.pdf",
+                f"https://www.ti.com/product/{base}",
+                f"https://www.ti.com/lit/gpn/{base.lower()}",
+            ])
+        
+        # Try each URL with validation
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found TI datasheet: {url}")
+                return {'found': True, 'url': url}
+        
+        # Fallback: Try aggregators
+        fallback_urls = [
+            f"https://www.ti.com/product/{clean}",  # Try one more time with clean part
+            f"https://www.digikey.com/en/products/detail/{base}",
+            f"https://octopart.com/search?q={base}",
+        ]
+        
+        for url in fallback_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
+        
+        logger.debug(f"  ✗ TI datasheet not found for {base}")
         return {'found': False}
     
     def _search_infineon(self, part: str) -> Dict:
-        """Search Infineon/Cypress datasheets - OPTIMIZED"""
-        base = re.sub(r'[^A-Z0-9-]', '', part)
-        urls = [
-            f"https://www.infineon.com/cms/en/product/{base.lower()}",
-            f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
+        """Search Infineon/Cypress datasheets with comprehensive validation
+        
+        Infineon uses pattern: www.infineon.com/cms/en/product/{part}/
+        Cypress (now Infineon) parts need special handling
+        """
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"  Searching Infineon for: {base}")
+        
+        urls_to_try = []
+        
+        # For CY8C/CY7C (Cypress PSoC chips)
+        if base.startswith(('CY8C', 'CY7C')):
+            # Remove package suffix (CY8C29666-24PVXI → CY8C29666)
+            base_clean = re.sub(r'-\d+[A-Z]+$', '', base)
+            
+            urls_to_try.extend([
+                f"https://www.infineon.com/cms/en/product/{base_clean.lower()}/",
+                f"https://www.infineon.com/cms/en/product/{base.lower()}/",
+                f"https://www.infineon.com/dgdl/Infineon-{base_clean}-DataSheet-v01_00-EN.pdf",
+            ])
+        else:
+            # Standard Infineon parts
+            urls_to_try.extend([
+                f"https://www.infineon.com/cms/en/product/{base.lower()}/",
+                f"https://www.infineon.com/cms/en/product/{base}/",
+            ])
+        
+        # Try each URL with validation
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found Infineon datasheet: {url}")
+                return {'found': True, 'url': url}
+        
+        # Fallback: Try aggregators
+        fallback_urls = [
+            f"https://www.digikey.com/en/products/detail/{base}",
+            f"https://octopart.com/search?q={base}",
         ]
         
-        for url in urls:
-            try:
-                r = self.session.head(url, timeout=0.5, allow_redirects=True)
-                if r.status_code == 200:
-                    logger.debug(f"  Found Infineon resource: {url}")
-                    return {'found': True, 'url': url}
-            except Exception as e:
-                logger.debug(f"Infineon search failed for {url}: {e}")
-                continue
+        for url in fallback_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
         
+        logger.debug(f"  ✗ Infineon datasheet not found for {base}")
         return {'found': False}
     
     def _search_stm(self, part: str) -> Dict:
-        """Search STMicroelectronics datasheets - OPTIMIZED"""
+        """Search STMicroelectronics datasheets with comprehensive validation
+        
+        STM parts include STM32 microcontrollers and M74HC logic ICs
+        """
         base = re.sub(r'[^A-Z0-9]', '', part).upper()
+        logger.debug(f"  Searching STM for: {base}")
         
-        # Handle M74HC/M74HCT series (generic 74-series with M prefix)
-        generic_part = None
-        if base.startswith('M74HC') or base.startswith('M74HCT'):
-            generic_part = base[1:]  # Remove M prefix
-            for suffix in ['B1', 'TTR', 'M1', 'N']:
-                if generic_part.endswith(suffix) and len(generic_part) - len(suffix) >= 5:
-                    generic_part = generic_part[:-len(suffix)]
+        urls_to_try = []
+        
+        # For STM32 parts
+        if base.startswith('STM32'):
+            urls_to_try.extend([
+                f"https://www.st.com/en/microcontrollers-microprocessors/stm32-32-bit-arm-cortex-mcus.html#{base.lower()}",
+                f"https://www.st.com/en/microcontrollers/{base.lower()}.html",
+            ])
+        
+        # For M74HC series (logic ICs)
+        if base.startswith(('M74HC', 'M74HCT')):
+            # Remove package suffix
+            clean = base
+            for suffix in ['B1', 'TTR', 'M1', 'N', 'RM13TR']:
+                if clean.endswith(suffix):
+                    clean = clean[:-len(suffix)]
                     break
-        
-        # Try aggregator first (faster than STM website)
-        try:
-            # Try generic part first if available (74HC238 instead of M74HC238B1)
-            search_part = generic_part if generic_part else base
-            agg_url = f"https://www.alldatasheet.com/{search_part.lower()}-datasheet.html"
-            r = self.session.head(agg_url, timeout=0.5, allow_redirects=True)
-            if r.status_code == 200:
-                logger.debug(f"  Found on aggregator: {agg_url}")
-                return {'found': True, 'url': agg_url}
-        except Exception as e:
-            logger.debug(f"  Aggregator failed: {e}")
-        
-        # If still not found and it's a generic 74-series part, try TI with SN74 prefix
-        if generic_part:
-            logger.debug(f"  STM not found, trying TI for generic part with SN74 prefix")
-            sn74_part = 'SN' + generic_part  # 74HC238 → SN74HC238
-            result = self._search_ti(sn74_part)
-            if result['found']:
-                return result
             
-            # Also try NXP (they make 74HC series too)
-            logger.debug(f"  TI not found, trying NXP for generic part")
-            result = self._search_nxp(generic_part)
-            if result['found']:
-                return result
+            urls_to_try.extend([
+                f"https://www.st.com/en/logic-comparators/{base.lower()}.html",
+                f"https://www.st.com/en/logic-comparators/{clean.lower()}.html",
+            ])
         
-        # Last resort: try datasheet aggregator sites
-        logger.debug(f"  Trying datasheet aggregator as last resort for {base}")
-        try:
-            # AllDataSheet.com has a good collection
-            agg_url = f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
-            r = self.session.head(agg_url, timeout=2, allow_redirects=True)
-            if r.status_code == 200:
-                logger.debug(f"  Found on aggregator: {agg_url}")
-                return {'found': True, 'url': agg_url}
-        except Exception as e:
-            logger.debug(f"  Aggregator failed: {e}")
+        # Try each URL with validation
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found STM datasheet: {url}")
+                return {'found': True, 'url': url}
         
+        # Fallback: Try aggregators
+        fallback_urls = [
+            f"https://www.digikey.com/en/products/detail/{base}",
+            f"https://octopart.com/search?q={base}",
+        ]
+        
+        for url in fallback_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
+        
+        logger.debug(f"  ✗ STM datasheet not found for {base}")
         return {'found': False}
     
     def _search_nxp(self, part: str) -> Dict:
-        """Search NXP datasheets - OPTIMIZED"""
-        base = re.sub(r'[^A-Z0-9]', '', part)
-        urls = [
+        """Search NXP datasheets with comprehensive validation"""
+        base = re.sub(r'[^A-Z0-9]', '', part).upper()
+        logger.debug(f"  Searching NXP for: {base}")
+        
+        urls_to_try = [
             f"https://www.nxp.com/products/{base.lower()}",
-            f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
+            f"https://www.nxp.com/docs/en/data-sheet/{base}.pdf",
         ]
         
-        for url in urls:
-            try:
-                r = self.session.head(url, timeout=0.5, allow_redirects=True)
-                if r.status_code == 200:
-                    logger.debug(f"  Found NXP resource: {url}")
-                    return {'found': True, 'url': url}
-            except Exception as e:
-                logger.debug(f"NXP search failed for {url}: {e}")
-                continue
+        # Try each URL with validation
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found NXP datasheet: {url}")
+                return {'found': True, 'url': url}
         
+        # Fallback: Try aggregators
+        fallback_urls = [
+            f"https://www.digikey.com/en/products/detail/{base}",
+            f"https://octopart.com/search?q={base}",
+        ]
+        
+        for url in fallback_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
+        
+        logger.debug(f"  ✗ NXP datasheet not found for {base}")
         return {'found': False}
     
     def _search_analog(self, part: str) -> Dict:
-        """Search Analog Devices datasheets - OPTIMIZED"""
-        base = re.sub(r'[^A-Z0-9-]', '', part)
-        urls = [
-            f"https://www.analog.com/en/products/{base.lower()}",
-            f"https://www.alldatasheet.com/{base.lower()}-datasheet.html"
+        """Search Analog Devices datasheets with comprehensive validation
+        
+        Note: analog.com is often very slow (5s+ response times), so we prioritize
+        fast aggregators like Octopart first, then try analog.com if needed.
+        """
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"  Searching Analog Devices for: {base}")
+        
+        # Try fast aggregators first (analog.com is extremely slow)
+        fast_urls = [
+            f"https://octopart.com/search?q={base}",
+            f"https://www.digikey.com/en/products/detail/{base}",
         ]
         
-        for url in urls:
-            try:
-                r = self.session.head(url, timeout=0.5, allow_redirects=True)
-                if r.status_code == 200:
-                    logger.debug(f"  Found Analog Devices resource: {url}")
-                    return {'found': True, 'url': url}
-            except Exception as e:
-                logger.debug(f"Analog Devices search failed for {url}: {e}")
-                continue
+        for url in fast_urls:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found via aggregator: {url}")
+                return {'found': True, 'url': url}
         
+        # If aggregators didn't work, try analog.com directly (slow!)
+        urls_to_try = [
+            f"https://www.analog.com/en/products/{base.lower()}.html",
+            f"https://www.analog.com/media/en/technical-documentation/data-sheets/{base}.pdf",
+        ]
+        
+        # For LT-series parts (Linear Technology, now Analog Devices)
+        if base.startswith('LT'):
+            urls_to_try.extend([
+                f"https://www.analog.com/media/en/technical-documentation/data-sheets/{base.lower()}.pdf",
+                f"https://www.analog.com/en/products/{base.lower()}.html",
+                f"https://www.analog.com/media/en/technical-documentation/data-sheets/{base}fb.pdf",  # Some use "fb" suffix
+            ])
+        
+        # For AD-series parts
+        if base.startswith('AD'):
+            urls_to_try.extend([
+                f"https://www.analog.com/media/en/technical-documentation/data-sheets/{base}.pdf",
+                f"https://www.analog.com/media/en/technical-documentation/data-sheets/{base.lower()}.pdf",
+                f"https://www.analog.com/en/products/{base.lower()}.html",
+            ])
+        
+        # Try each URL with validation (these will be slow!)
+        for url in urls_to_try:
+            if self._validate_url(url):
+                logger.debug(f"  ✓ Found Analog Devices datasheet: {url}")
+                return {'found': True, 'url': url}
+        
+        # Last resort: Maxim (also slow, but try anyway)
+        maxim_url = f"https://www.maximintegrated.com/en/products/{base.lower()}.html"
+        if self._validate_url(maxim_url):
+            logger.debug(f"  ✓ Found via Maxim: {maxim_url}")
+            return {'found': True, 'url': maxim_url}
+        
+        logger.debug(f"  ✗ Analog Devices datasheet not found for {base}")
         return {'found': False}
     
     def _extract_marking_from_pdf(self, pdf_path: str) -> Optional[str]:

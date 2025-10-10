@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "5.0.0"
+#define MyAppVersion "6.0.0"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -74,7 +74,10 @@ Source: "yolov8n.pt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install_dependencies.py"; DestDir: "{app}"; Flags: ignoreversion
 
-; NOTE: test_images, debug_output folders excluded from deployment
+; Test Images
+Source: "test_images\*"; DestDir: "{app}\test_images"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; NOTE: debug_output folder excluded from deployment (created at runtime)
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
@@ -105,6 +108,7 @@ Type: filesandordirs; Name: "{app}\debug_output"
 Type: filesandordirs; Name: "{app}\final_production_debug"
 Type: filesandordirs; Name: "{app}\debug_preprocessing"
 Type: filesandordirs; Name: "{app}\production_debug"
+Type: filesandordirs; Name: "{app}\test_images"
 Type: files; Name: "{app}\yolov8n.pt"
 Type: files; Name: "{app}\*.pt"
 Type: filesandordirs; Name: "{app}\runs"

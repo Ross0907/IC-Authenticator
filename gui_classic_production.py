@@ -4,6 +4,7 @@ Production-ready interface with comprehensive details display
 """
 
 import sys
+import webbrowser
 import os
 import cv2
 import torch
@@ -1125,7 +1126,7 @@ class ICAuthenticatorGUI(QMainWindow):
         # Create dialog with table widget
         dialog = QDialog(self)
         dialog.setWindowTitle("Batch Processing Complete")
-        dialog.setMinimumSize(1000, 700)
+        dialog.setMinimumSize(1400, 900)  # Much larger window
         
         layout = QVBoxLayout(dialog)
         
@@ -1232,14 +1233,39 @@ class ICAuthenticatorGUI(QMainWindow):
             part_item = QTableWidgetItem(part_number)
             table.setItem(idx, 4, part_item)
             
-            # Datasheet status
+            # Datasheet status - make it a clickable button if found
             datasheet_found = result.get('datasheet_found', False)
-            datasheet_item = QTableWidgetItem("✅ Found" if datasheet_found else "❌ Not Found")
-            datasheet_item.setForeground(QColor(76, 175, 80) if datasheet_found else QColor(244, 67, 54))
-            datasheet_item.setTextAlignment(Qt.AlignCenter)
-            table.setItem(idx, 5, datasheet_item)
             
-            # View button
+            if datasheet_found and result.get('datasheet_url'):
+                # Create clickable button for found datasheets
+                datasheet_btn = QPushButton("✅ Found")
+                datasheet_url = result['datasheet_url']
+                datasheet_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: transparent;
+                        color: #4CAF50;
+                        border: none;
+                        padding: 5px;
+                        font-weight: bold;
+                        text-decoration: underline;
+                    }
+                    QPushButton:hover {
+                        color: #66BB6A;
+                        background-color: #3a3a3a;
+                    }
+                """)
+                datasheet_btn.setCursor(Qt.PointingHandCursor)
+                datasheet_btn.clicked.connect(lambda checked, url=datasheet_url: webbrowser.open(url))
+                datasheet_btn.setToolTip(f"Click to open datasheet:\n{datasheet_url}")
+                table.setCellWidget(idx, 5, datasheet_btn)
+            else:
+                # Regular text item for not found
+                datasheet_item = QTableWidgetItem("❌ Not Found")
+                datasheet_item.setForeground(QColor(244, 67, 54))
+                datasheet_item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(idx, 5, datasheet_item)
+            
+            # View button - always shows result details dialog
             view_btn = QPushButton("🔍 View")
             view_btn.setStyleSheet("""
                 QPushButton {
@@ -1255,6 +1281,7 @@ class ICAuthenticatorGUI(QMainWindow):
                 }
             """)
             view_btn.clicked.connect(lambda checked, i=idx: self.view_batch_result_by_index(i))
+            view_btn.setToolTip("View detailed results")
             table.setCellWidget(idx, 6, view_btn)
         
         layout.addWidget(table)
@@ -1559,8 +1586,13 @@ class ICAuthenticatorGUI(QMainWindow):
             msg.exec_()
             
             if msg.clickedButton() == open_btn:
-                import subprocess
-                subprocess.Popen(f'explorer "{base_dir}"')
+                # Use os.startfile for reliable Windows folder opening
+                try:
+                    os.startfile(base_dir)
+                except:
+                    # Fallback to explorer command
+                    import subprocess
+                    subprocess.Popen(['explorer', base_dir])
         
         except Exception as e:
             import traceback
