@@ -1,14 +1,14 @@
-# IC Authenticator - Production System v3.0.4
+# IC Authenticator - Production System v3.0.6
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-3.0.4-blue.svg)
+![Version](https://img.shields.io/badge/version-3.0.6-blue.svg)
 ![Status](https://img.shields.io/badge/status-production-green.svg)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![GPU](https://img.shields.io/badge/GPU-accelerated-orange.svg)
 
-**A professional GPU-accelerated system for detecting counterfeit integrated circuits using advanced OCR, manufacturer marking validation, and datasheet verification.**
+**A professional GPU-accelerated system for detecting counterfeit integrated circuits using intelligent OCR with auto-orientation, manufacturer marking validation, and datasheet verification.**
 
 </div>
 
@@ -41,26 +41,24 @@
 
 ## 🎯 Overview
 
-This system analyzes IC (Integrated Circuit) chip images to determine authenticity by examining multiple factors including text extraction, manufacturer markings, date codes, and datasheet verification. It employs GPU-accelerated OCR with multiple preprocessing methods to handle various IC marking types including laser-etched and engraved text.
+This system analyzes IC (Integrated Circuit) chip images to determine authenticity by examining multiple factors including intelligent text extraction with automatic orientation detection, manufacturer markings, date codes, and datasheet verification. It employs GPU-accelerated OCR with multiple preprocessing methods and smart rotation detection to handle various IC marking types including laser-etched and engraved text.
 
 ### Key Capabilities
 
-- ✅ **Text Extraction** - GPU-accelerated OCR with 7+ preprocessing methods
+- ✅ **Intelligent OCR** - GPU-accelerated OCR with automatic orientation detection (0°, 90°, 180°, 270°) and 5+ preprocessing methods
 - ✅ **Manufacturer Marking Validation** - Pattern-based verification using industry standards
-- ✅ **Datasheet Verification** - Automatic lookup across 5+ trusted sources with PDF parsing
+- ✅ **Datasheet Verification** - Automatic lookup across 5+ trusted sources with PDF parsing and caching
 - ✅ **Intelligent Counterfeit Detection** - Pattern recognition for misspellings, old date codes, and combined indicators
 - ✅ **Comprehensive Scoring** - 100-point authentication system with detailed breakdown
 
-### 🆕 Latest Improvements (v3.0.4)
+### 🆕 Latest Improvements (v3.0.6)
 
-**Intelligent Counterfeit Detection:**
-- ✅ **PDF Parsing** - Extracts marking specifications directly from manufacturer PDFs
-- ✅ **Misspelling Detection** - Identifies manufacturer name misspellings (e.g., ANEL→ATMEL)
-- ✅ **Old Date Code Detection** - Flags suspiciously old date codes (pre-2012)
-- ✅ **Smart Pattern Filtering** - Distinguishes real misspellings from OCR logo errors
-- ✅ **WWYY Format Recognition** - Correctly interprets ambiguous date codes (e.g., "0723" = week 07, year 2023)
-- ✅ **Combined Indicator Analysis** - Escalates confidence when multiple suspicious patterns detected
-- ✅ **Reduced False Positives** - More lenient when datasheet verification succeeds
+**System Optimization:**
+- ✅ **YOLO Removal** - Simplified architecture eliminates YOLO dependency for faster startup
+- ✅ **Auto-Orientation Detection** - Tests 4 cardinal rotations (0°, 90°, 180°, 270°) automatically
+- ✅ **Smart Rotation Selection** - Chooses best orientation based on alphanumeric character detection
+- ✅ **Faster Processing** - Reduced memory footprint and improved initialization time
+- ✅ **PDF Datasheet Support** - Returns proper file:// URIs for cached local datasheets
 
 **Test Results:**
 - ✅ **100% detection rate** on confirmed counterfeits (2/2 detected)
@@ -71,9 +69,11 @@ This system analyzes IC (Integrated Circuit) chip images to determine authentici
 
 ## ✨ Features
 
-### Advanced OCR
-- **7+ preprocessing methods** with ensemble selection
-- **Multi-scale enhancement** based on research papers (3x upscaling, rotation augmentation)
+### Intelligent OCR with Auto-Orientation
+- **Automatic orientation detection** - Tests all 4 cardinal rotations (0°, 90°, 180°, 270°)
+- **Smart rotation selection** - Chooses best orientation based on alphanumeric content
+- **5+ preprocessing methods** with ensemble selection
+- **Multi-scale enhancement** based on research papers (CLAHE, bilateral filtering, adaptive threshold)
 - **GPU acceleration** - CUDA-enabled PyTorch and EasyOCR for 3-5x speed improvement
 - **Automatic method selection** - Chooses best preprocessing variant per image
 
@@ -84,9 +84,9 @@ This system analyzes IC (Integrated Circuit) chip images to determine authentici
 - Manufacturer-specific format checking
 
 ### Datasheet Verification
-- **PDF Parsing** - Downloads and extracts marking specifications from manufacturer PDFs
+- **PDF Caching** - Stores downloaded PDFs locally with proper file:// URI support
 - **Smart URL Extraction** - Extracts PDF links from product pages automatically
-- **PDF Caching** - Stores downloaded PDFs locally to avoid repeated downloads
+- **PDF Parsing** - Downloads and extracts marking specifications from manufacturer PDFs
 - Searches 10+ online sources:
   - **Manufacturer Sites**: Texas Instruments, Microchip, STMicroelectronics, NXP, Infineon, Analog Devices
   - **Distributors**: Digikey, Mouser, Octopart
@@ -109,7 +109,8 @@ This system analyzes IC (Integrated Circuit) chip images to determine authentici
 - **Dark/Light themes** with persistent preferences
 - **Real-time progress tracking**
 - **Comprehensive result display** with detailed breakdowns
-- **Debug visualization** - View preprocessing steps and OCR boxes
+- **Debug visualization** - View preprocessing steps and OCR detection boxes
+- **Batch processing** - Process multiple images simultaneously
 
 ---
 
@@ -741,39 +742,62 @@ Authentication Decision:
 
 ### Processing Pipeline
 
-#### Stage 1: Image Preprocessing
+#### Stage 1: Intelligent Orientation Detection
 
 ```
 Input Image
     │
-    ├─→ Variant 1: TrOCR Optimized
-    │   ├─ Normalize to [0, 255]
-    │   ├─ Strong CLAHE (clipLimit=10.0)
-    │   ├─ Denoise with fastNlMeans
-    │   └─ Unsharp masking
+    └─→ Try All 4 Cardinal Rotations
+        ├─ 0° (original)
+        ├─ 90° clockwise
+        ├─ 180° 
+        └─ 270° clockwise
+        
+        For each rotation:
+          ├─ Apply CLAHE enhancement
+          ├─ Run quick OCR test
+          └─ Score alphanumeric content
+        
+        Select best orientation based on:
+          ├─ Number of alphanumeric characters
+          ├─ Ratio of alphanumeric to total
+          └─ Overall quality score
+```
+
+#### Stage 2: Image Preprocessing
+
+```
+Best Oriented Image
     │
-    ├─→ Variant 2: EasyOCR Optimized
+    ├─→ Variant 1: CLAHE Enhanced
     │   ├─ Normalize to [0, 255]
-    │   ├─ CLAHE (clipLimit=6.0)
-    │   ├─ Bilateral filter
-    │   ├─ Adaptive threshold
-    │   └─ Invert if needed
+    │   ├─ CLAHE (clipLimit=3.0)
+    │   └─ Contrast enhancement
     │
-    ├─→ Variant 3: docTR Optimized
-    │   ├─ Normalize to [0, 255]
-    │   ├─ Strong CLAHE (clipLimit=8.0)
+    ├─→ Variant 2: Bilateral Filtered
+    │   ├─ Bilateral filter (edge-preserving)
+    │   ├─ Noise reduction
+    │   └─ Sharpness preservation
+    │
+    ├─→ Variant 3: Adaptive Threshold
+    │   ├─ Adaptive thresholding
+    │   ├─ Binarization
+    │   └─ Text clarity optimization
+    │
+    ├─→ Variant 4: Unsharp Masked
     │   ├─ Gaussian blur
-    │   └─ Sharpen
+    │   ├─ Unsharp masking
+    │   └─ Edge enhancement
     │
-    └─→ Variant 4: Mild Enhancement
-        ├─ Normalize to [0, 255]
-        └─ Mild CLAHE (clipLimit=3.0)
+    └─→ Variant 5: OTSU Threshold
+        ├─ Otsu's binarization
+        └─ Automatic threshold selection
 ```
 
-#### Stage 2: OCR Processing & Best Result Selection
+#### Stage 3: OCR Processing & Best Result Selection
 
 ```
-4 Preprocessed Variants
+5 Preprocessed Variants
     │
     ├─→ EasyOCR (GPU-Accelerated)
     │   ├─ Text Detection
@@ -781,7 +805,7 @@ Input Image
     │   └─ Confidence Scoring
     │
     └─→ Select Best Result
-        ├─ Quality Score = (OCR Confidence × 0.6) + (Text Quality × 0.4)
+        ├─ Quality Score = OCR Confidence + Text Quality
         ├─ Text quality considers:
         │   • Length (5-60 chars preferred)
         │   • Alphanumeric content
@@ -790,7 +814,7 @@ Input Image
         └─ Select highest scoring variant
 ```
 
-#### Stage 3: Parallel Analysis
+#### Stage 4: Parallel Analysis
 
 ```
 Extracted Text
@@ -813,7 +837,7 @@ Extracted Text
         └─ Calculate OCR score
 ```
 
-#### Stage 4: Decision Engine
+#### Stage 5: Decision Engine
 
 ```
 All Scores Collected
@@ -841,66 +865,104 @@ All Scores Collected
 
 ### Preprocessing Methods
 
-This system implements **research-based techniques** from peer-reviewed papers:
+This system implements **research-based techniques** from peer-reviewed papers with **automatic orientation detection**:
 
-#### 1. TrOCR Optimized Preprocessing
-**Purpose:** Enhance engraved/laser-etched text
+#### Step 0: Automatic Orientation Detection (NEW in v3.0.6)
+**Purpose:** Ensure optimal text orientation before processing
+
+**Process:**
+- Tests all 4 cardinal rotations (0°, 90°, 180°, 270°)
+- Applies CLAHE enhancement to each rotation
+- Runs quick OCR test to detect alphanumeric characters
+- Scores each rotation based on:
+  - Number of alphanumeric characters found
+  - Ratio of alphanumeric to total characters
+  - Overall quality indicators
+- Selects best orientation automatically
+
+**Benefits:**
+- Handles rotated IC images automatically
+- No manual rotation needed
+- Improves OCR accuracy for all orientations
+
+#### 1. CLAHE Enhanced Preprocessing
+**Purpose:** Enhance contrast for low-contrast markings
 
 **Research:** Harrison et al. - Automated Laser Marking Analysis
 
 **Steps:**
-- 3x cubic interpolation upscaling
-- Strong CLAHE (Contrast Limited Adaptive Histogram Equalization) - clipLimit=10.0
-- Fast non-local means denoising (h=10)
-- Unsharp masking for edge enhancement
+- Contrast Limited Adaptive Histogram Equalization (clipLimit=3.0)
+- Tiled grid-based enhancement (8x8)
+- Preserves local details while enhancing overall contrast
 
 **Best For:** Laser-etched text, engraved markings, low-contrast ICs
 
-#### 2. EasyOCR Optimized Preprocessing
-**Purpose:** Create high-contrast binary images
+#### 2. Bilateral Filtered Preprocessing
+**Purpose:** Reduce noise while preserving edges
 
 **Research:** Paper 3 - Morphological operations for features
 
 **Steps:**
-- Moderate CLAHE (clipLimit=6.0)
 - Bilateral filter (preserves edges while reducing noise)
+- Edge-aware smoothing
+- Noise reduction without blurring text
+
+**Best For:** Noisy images, poor lighting, grainy photos
+
+#### 3. Adaptive Threshold Preprocessing
+**Purpose:** Create high-contrast binary images
+
+**Steps:**
 - Adaptive threshold with Gaussian method
-- Auto-invert based on brightness
+- Block-based thresholding
+- Automatic brightness adjustment
 
 **Best For:** Printed text, stamp markings, high-contrast ICs
 
-#### 3. docTR Optimized Preprocessing
-**Purpose:** Balance contrast and clarity
+#### 4. Unsharp Masked Preprocessing
+**Purpose:** Enhance edge sharpness
 
 **Steps:**
-- Strong CLAHE (clipLimit=8.0)
-- Gaussian blur (kernel 3x3)
-- Sharpening with weighted addition
-- Range clipping [0, 255]
+- Gaussian blur (kernel 5x5)
+- Unsharp masking with weighted addition
+- Edge enhancement
 
-**Best For:** Mixed marking types, variable lighting
+**Best For:** Blurry images, slightly out-of-focus photos
 
-#### 4. Mild Enhancement
-**Purpose:** Gentle enhancement for clear images
+#### 5. OTSU Threshold Preprocessing
+**Purpose:** Automatic optimal binarization
 
 **Steps:**
-- Mild CLAHE (clipLimit=3.0)
-- Minimal processing
+- Otsu's method for automatic threshold calculation
+- Optimal separation of foreground/background
+- Binarization
 
-**Best For:** High-quality images, well-lit photos, clear markings
+**Best For:** Images with bimodal histograms, clear separation
 
 ### OCR Ensemble Selection
 
-The system processes the image with all 4 preprocessing variants and selects the best result using:
+The system processes the image with **automatic orientation detection** and **5 preprocessing variants**, then selects the best result using:
 
 ```
-Quality Score = (OCR Confidence × 0.6) + (Text Quality × 0.4)
+Step 1: Orientation Detection
+  - Test 4 rotations (0°, 90°, 180°, 270°)
+  - Quick OCR on each rotation
+  - Score alphanumeric content
+  - Select best orientation
+
+Step 2: Preprocessing Variants
+  - Apply 5 different enhancement methods
+  - CLAHE, Bilateral, Adaptive, Unsharp, OTSU
+  - Early termination if high-confidence result found
+
+Step 3: Best Result Selection
+  Quality Score = OCR Confidence + Text Quality
 
 Where Text Quality considers:
-• Text length (optimal: 5-60 characters)
-• Alphanumeric content (both letters and numbers preferred)
-• Special character ratio (< 15% preferred)
-• Pattern matching (known IC patterns score higher)
+  • Text length (optimal: 5-60 characters)
+  • Alphanumeric content (both letters and numbers preferred)
+  • Special character ratio (< 15% preferred)
+  • Pattern matching (known IC patterns score higher)
 ```
 
 ### GPU Acceleration
@@ -946,18 +1008,29 @@ Where Text Quality considers:
 ┌─────────────────────────▼───────────────────────────────────┐
 │            Authentication Engine (Core Logic)               │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │           Enhanced Preprocessing Module             │   │
-│  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐              │   │
-│  │  │TrOCR │ │EasyOCR│ │docTR│ │ Mild │              │   │
-│  │  └──────┘ └──────┘ └──────┘ └──────┘              │   │
+│  │      Step 1: Automatic Orientation Detection        │   │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐       │   │
+│  │  │  0°    │ │  90°   │ │ 180°   │ │ 270°   │       │   │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘       │   │
 │  └────────────────────┬────────────────────────────────┘   │
 │                       │                                     │
 │  ┌────────────────────▼────────────────────────────────┐   │
-│  │        GPU-Accelerated OCR (EasyOCR)               │   │
+│  │      Step 2: Enhanced Preprocessing Module          │   │
+│  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐      │   │
+│  │  │CLAHE │ │Bilat.│ │Adapt.│ │Unsharp│ │OTSU │      │   │
+│  │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘      │   │
 │  └────────────────────┬────────────────────────────────┘   │
 │                       │                                     │
 │  ┌────────────────────▼────────────────────────────────┐   │
-│  │            Parallel Processing                      │   │
+│  │   Step 3: GPU-Accelerated OCR (EasyOCR)            │   │
+│  └────────────────────┬────────────────────────────────┘   │
+│                       │                                     │
+│  ┌────────────────────▼────────────────────────────────┐   │
+│  │    Step 4: Part Number Identification               │   │
+│  └────────────────────┬────────────────────────────────┘   │
+│                       │                                     │
+│  ┌────────────────────▼────────────────────────────────┐   │
+│  │            Step 5: Parallel Processing              │   │
 │  │  ┌──────────┐           ┌──────────┐               │   │
 │  │  │ Marking  │           │Datasheet │               │   │
 │  │  │Validation│           │ Scraper  │               │   │
@@ -965,7 +1038,7 @@ Where Text Quality considers:
 │  └────────────────────┬────────────────────────────────┘   │
 │                       │                                     │
 │  ┌────────────────────▼────────────────────────────────┐   │
-│  │      Scoring & Decision Engine (100-point)         │   │
+│  │   Step 6: Scoring & Decision Engine (100-point)    │   │
 │  └────────────────────┬────────────────────────────────┘   │
 └───────────────────────┼─────────────────────────────────────┘
                         │

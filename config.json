@@ -1,7 +1,7 @@
 {
   "system": {
     "name": "IC Authentication System",
-    "version": "3.0.6",
+    "version": "7.0.15",
     "cache_dir": "datasheet_cache",
     "reports_dir": "reports",
     "database": "ic_authentication.db"

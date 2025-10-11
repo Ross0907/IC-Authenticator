@@ -29,9 +29,6 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
-# YOLO Object Detection
-ultralytics>=8.0.0
-
 # Other utilities
 PyMuPDF>=1.23.0
 

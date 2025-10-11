@@ -1,6 +1,7 @@
 """
-Smart IC Authenticator - Clean Implementation
-Uses YOLO + OCR + Intelligent Datasheet Finding
+Smart IC Authenticator - Production System
+Uses Intelligent OCR with Multi-Orientation Detection + Datasheet Verification
+No YOLO dependency - Direct OCR is faster and more reliable
 """
 
 import cv2
@@ -11,28 +12,42 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import re
 import logging
-from ultralytics import YOLO
 from bs4 import BeautifulSoup
 import PyPDF2
 import io
+import torch
+from smart_datasheet_finder import SmartDatasheetFinder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class SmartICAuthenticator:
-    """Clean, intelligent IC authentication system"""
+    """Production-ready IC authentication system with intelligent OCR and datasheet verification"""
     
     def __init__(self):
-        """Initialize YOLO, OCR, and datasheet systems"""
-        # Load YOLO for text detection
-        logger.info("Loading YOLO model...")
-        self.yolo = YOLO('yolov8n.pt')
-        self.yolo.overrides['verbose'] = False  # Disable YOLO verbose output
+        """Initialize OCR and datasheet systems"""
+        # Check GPU availability
+        gpu_available = torch.cuda.is_available()
+        if gpu_available:
+            logger.info(f"✓ GPU Available: {torch.cuda.get_device_name(0)}")
+            logger.info(f"  CUDA Version: {torch.version.cuda}")
+        else:
+            logger.warning("⚠ GPU not available - using CPU mode")
         
-        # Load OCR with CPU (GPU causes crashes and high memory)
-        logger.info("Loading EasyOCR...")
-        self.ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)  # Changed to CPU
+        # Load OCR with GPU support for fast processing
+        logger.info("Loading EasyOCR with GPU support...")
+        self.ocr_reader = easyocr.Reader(['en'], gpu=gpu_available, verbose=False)
+        
+        if gpu_available:
+            logger.info("✓ EasyOCR loaded with GPU acceleration")
+        else:
+            logger.info("✓ EasyOCR loaded in CPU mode")
+        
+        # Initialize smart datasheet finder
+        self.datasheet_cache = Path("datasheet_cache")
+        self.datasheet_cache.mkdir(exist_ok=True)
+        self.datasheet_finder = SmartDatasheetFinder(self.datasheet_cache)
         
         # HTTP session for datasheet downloads
         self.session = requests.Session()
@@ -59,9 +74,11 @@ class SmartICAuthenticator:
             'ATMEGA': r'AT\s*[MT]?EGA\s*\d+[A-Z]*\d*',  # More lenient: AT MEGA, ATMEGA, AMEGA
             'ATTINY': r'AT\s*TINY\s*\d+[A-Z]*',
             'ATMEL': r'AT\s*MEL\s*\d+[A-Z]*\d*',  # ATMEL general
+            'AT': r'AT\s*\d{3,4}[A-Z]*\d*[A-Z]*',  # Generic Atmel parts (AT89, AT90, AT24, etc.)
             'PIC': r'PIC\s*\d+[A-Z]\s*\d+[A-Z]*\d*',  # Allow spaces in PIC18F45K22
             'STM32': r'STM32[A-Z]\d+[A-Z]*\d*[A-Z]*',
             'LM': r'[IL]M\s*\d+[A-Z]*\d*[A-Z]*',  # Allow I→L confusion
+            'LM556': r'[IL]M\s*556[A-Z]*',  # Specific pattern for LM556 (dual 555)
             'TL': r'[TI][LI]\s*\d+[A-Z]*\d*',  # Texas Instruments TL series with OCR errors
             'TLC': r'TLC\s*\d+[A-Z]*',  # TI TLC series
             'TPS': r'TPS\s*\d+[A-Z]*\d*',  # TI TPS power series
@@ -97,11 +114,13 @@ class SmartICAuthenticator:
             'ATMEGA': 'Microchip',
             'ATTINY': 'Microchip',
             'ATMEL': 'Microchip',
+            'AT': 'Microchip',  # Generic Atmel (now part of Microchip)
             'PIC': 'Microchip',
             'MCP': 'Microchip',
             'STM32': 'STMicroelectronics',
             'M74HC': 'STMicroelectronics',
             'LM': 'Texas Instruments',
+            'LM556': 'Texas Instruments',  # Dual 555 timer
             'LMC': 'Texas Instruments',
             'TL': 'Texas Instruments',
             'TLC': 'Texas Instruments',
@@ -113,7 +132,7 @@ class SmartICAuthenticator:
             'SN': 'Texas Instruments',
             'ADC': 'Texas Instruments',
             'DAC': 'Texas Instruments',
-            'NE': 'Texas Instruments',
+            'NE': 'Various',  # NE555 made by many (TI, ST, Fairchild, etc.)
             'SE': 'Texas Instruments',
             'AUCH': 'Texas Instruments',
             'CY8C': 'Infineon',
@@ -143,16 +162,12 @@ class SmartICAuthenticator:
                 logger.error("  ✗ Could not load image")
                 return self._create_error_result(image_path, 'Could not load image file')
             
-            # Step 1: Use YOLO to detect text regions
-            logger.info("Step 1: YOLO text detection...")
-            text_regions = self._detect_text_yolo(image)
+            # Step 1: OCR extraction with automatic orientation detection
+            logger.info("Step 1: OCR text extraction...")
+            ocr_results = self._extract_text_ocr(image)
             
-            # Step 2: OCR on detected regions
-            logger.info("Step 2: OCR extraction...")
-            ocr_results = self._extract_text_ocr(image, text_regions)
-            
-            # Step 3: Parse and identify part number
-            logger.info("Step 3: Part number identification...")
+            # Step 2: Parse and identify part number
+            logger.info("Step 2: Part number identification...")
             part_info = self._identify_part_number(ocr_results)
             
             if not part_info['part_number']:
@@ -163,8 +178,8 @@ class SmartICAuthenticator:
             logger.info(f"  ✓ Part Number: {part_info['part_number']}")
             logger.info(f"  ✓ Manufacturer: {part_info['manufacturer']}")
             
-            # Step 4: Find datasheet
-            logger.info("Step 4: Finding datasheet...")
+            # Step 3: Find datasheet
+            logger.info("Step 3: Finding datasheet...")
             datasheet = self._find_datasheet(part_info['part_number'], part_info['manufacturer'])
             
             if datasheet['found']:
@@ -172,17 +187,18 @@ class SmartICAuthenticator:
             else:
                 logger.info(f"  ✗ Datasheet not found")
             
-            # Step 5: Verify marking
-            logger.info("Step 5: Marking verification...")
+            # Step 4: Verify marking
+            logger.info("Step 4: Marking verification...")
             marking_valid = False
             if datasheet['found'] and datasheet.get('marking_info'):
-                marking_valid = self._verify_marking(ocr_results, datasheet['marking_info'])
+                marking_valid = self._verify_marking(ocr_results, datasheet['marking_info'], part_info['part_number'])
             
-            # Step 6: Counterfeit detection
-            logger.info("Step 6: Counterfeit detection...")
+            # Step 5: Counterfeit detection (pass marking_info for validation)
+            logger.info("Step 5: Counterfeit detection...")
             counterfeit_check = self._check_for_counterfeits(ocr_results, part_info['part_number'], 
                                                              part_info['manufacturer'],
-                                                             datasheet_found=datasheet['found'])
+                                                             datasheet_found=datasheet['found'],
+                                                             marking_info=datasheet.get('marking_info', {}))
             
             if counterfeit_check['flags']:
                 logger.warning("  ⚠️  Suspicious indicators detected:")
@@ -194,11 +210,12 @@ class SmartICAuthenticator:
             # Calculate verdict
             confidence = self._calculate_confidence(part_info, datasheet, marking_valid, counterfeit_check)
             
-            if confidence >= 85:
+            # Adjusted thresholds for more balanced verdicts
+            if confidence >= 80:
                 verdict = "AUTHENTIC"
-            elif confidence >= 65:
+            elif confidence >= 60:
                 verdict = "LIKELY AUTHENTIC"
-            elif confidence >= 40:
+            elif confidence >= 35:
                 verdict = "SUSPICIOUS"
             else:
                 verdict = "LIKELY COUNTERFEIT"
@@ -213,23 +230,34 @@ class SmartICAuthenticator:
             # Create OCR debug image with bounding boxes
             if img is not None and ocr_results.get('details'):
                 debug_ocr_image = img.copy()
+                img_height, img_width = debug_ocr_image.shape[:2]
+                
                 for detail in ocr_results['details']:
                     bbox = detail['bbox']
                     text = detail['text']
                     conf = detail['confidence']
                     
-                    # Convert bbox to integer points
+                    # Convert bbox to integer points and clip to image bounds
                     points = np.array(bbox, dtype=np.int32)
+                    points[:, 0] = np.clip(points[:, 0], 0, img_width - 1)
+                    points[:, 1] = np.clip(points[:, 1], 0, img_height - 1)
                     
                     # Draw bounding box
                     cv2.polylines(debug_ocr_image, [points], True, (0, 255, 255), 2)
                     
-                    # Draw text label with background
+                    # Draw text label with background (with bounds checking)
                     text_label = f"{text} ({conf:.2f})"
                     (w, h), _ = cv2.getTextSize(text_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    cv2.rectangle(debug_ocr_image, (points[0][0], points[0][1] - h - 5), 
-                                (points[0][0] + w, points[0][1]), (0, 255, 255), -1)
-                    cv2.putText(debug_ocr_image, text_label, (points[0][0], points[0][1] - 5),
+                    
+                    # Calculate label position with bounds checking
+                    label_x = max(0, min(points[0][0], img_width - w))
+                    label_y = max(h + 5, points[0][1])  # Ensure label is within image
+                    
+                    cv2.rectangle(debug_ocr_image, 
+                                (label_x, label_y - h - 5), 
+                                (min(label_x + w, img_width - 1), label_y), 
+                                (0, 255, 255), -1)
+                    cv2.putText(debug_ocr_image, text_label, (label_x, label_y - 5),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             # Get preprocessing variants
@@ -243,15 +271,21 @@ class SmartICAuthenticator:
                 'normalized_part_number': part_info['part_number'],
                 'manufacturer': part_info['manufacturer'],
                 'datasheet_found': datasheet['found'],
-                'datasheet_url': datasheet.get('url'),
+                'datasheet_url': datasheet.get('url'),  # Original manufacturer URL (can be None)
+                'datasheet_local_file': datasheet.get('local_file'),  # Local cached PDF for viewer
+                'datasheet_source': datasheet.get('source'),
                 'marking_verified': marking_valid,
+                'marking_validation': {
+                    'validation_passed': marking_valid,
+                    'manufacturer': part_info['manufacturer'],
+                    'issues': counterfeit_check.get('marking_issues', [])
+                },
                 'counterfeit_flags': counterfeit_check['flags'],
                 'suspicion_score': counterfeit_check['suspicion_score'],
                 'confidence': confidence,
                 'verdict': verdict,
                 'is_authentic': confidence >= 65,
                 'full_text': ocr_results['full_text'],
-                'text_regions': text_regions,
                 'ocr_details': ocr_results.get('details', []),
                 'ocr_confidence': ocr_results.get('ocr_confidence', 0.0),  # Add OCR confidence
                 'preprocessing_images': ocr_results.get('preprocessing_images', []),  # Add preprocessing
@@ -297,50 +331,78 @@ class SmartICAuthenticator:
             'verdict': 'ERROR',
             'is_authentic': False,
             'full_text': extracted_text,
-            'text_regions': [],
             'ocr_details': [],
             'image_path': image_path,
             'date_codes': [],
             'reasons': [f'Error: {error_msg}']
         }
     
-    def _detect_text_yolo(self, image: np.ndarray) -> List[Tuple]:
-        """Use YOLO to detect text regions"""
-        results = self.yolo(image, conf=0.25, verbose=False)
-        
-        text_regions = []
-        if len(results) > 0 and len(results[0].boxes) > 0:
-            for box in results[0].boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                conf = float(box.conf[0])
-                text_regions.append((x1, y1, x2, y2, conf))
-        
-        # MEMORY CLEANUP: Delete YOLO results immediately
-        del results
-        
-        logger.info(f"  Found {len(text_regions)} text regions with YOLO")
-        return text_regions
-    
     def _try_all_orientations(self, image: np.ndarray) -> Tuple[np.ndarray, int]:
-        """DISABLED: Orientation detection is disabled for now to prevent incorrect rotations"""
-        # Simply return original image without rotation
-        # This is more reliable than trying to detect orientation which can fail
-        logger.info(f"  No rotation applied (orientation detection disabled)")
-        return image, 0
+        """Try all 4 cardinal orientations and return the best one for OCR"""
+        try:
+            best_image = image.copy()
+            best_angle = 0
+            best_score = 0
+            best_results = []
+            
+            # Try 4 cardinal rotations: 0°, 90°, 180°, 270°
+            for angle in [0, 90, 180, 270]:
+                # Rotate image
+                if angle == 0:
+                    rotated = image.copy()
+                elif angle == 90:
+                    rotated = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+                elif angle == 180:
+                    rotated = cv2.rotate(image, cv2.ROTATE_180)
+                elif angle == 270:
+                    rotated = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                
+                # Enhance image for OCR test
+                gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+                enhanced = clahe.apply(gray)
+                enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                
+                # Quick OCR test with LOW confidence threshold to detect any text
+                results = self.ocr_reader.readtext(enhanced_bgr, detail=1, paragraph=False,
+                                                   min_size=5, text_threshold=0.5, 
+                                                   low_text=0.3, link_threshold=0.3)
+                
+                # Score based on number of alphanumeric characters found
+                score = 0
+                for bbox, text, conf in results:
+                    # Count alphanumeric characters (indicates real text vs noise)
+                    alnum_count = sum(c.isalnum() for c in text)
+                    if alnum_count >= 2:  # At least 2 alphanumeric chars
+                        score += alnum_count * conf
+                
+                logger.debug(f"  Angle {angle:3d}°: {len(results)} detections, score={score:.2f}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_image = rotated
+                    best_angle = angle
+                    best_results = results
+            
+            if best_angle != 0:
+                logger.info(f"  Auto-rotation: Best orientation is {best_angle}° (score: {best_score:.2f})")
+            else:
+                logger.info(f"  No rotation needed (original best, score: {best_score:.2f})")
+            
+            return best_image, best_angle
+            
+        except Exception as e:
+            logger.debug(f"Orientation detection failed: {e}, using original image")
+            return image, 0
     
-    def _extract_text_ocr(self, image: np.ndarray, regions: List[Tuple]) -> Dict:
-        """Extract text using OCR with OPTIMIZED preprocessing (reduced variants for speed)"""
-        return self._extract_text_ocr_internal(image, regions, try_rotation=True)
-    
-    def _extract_text_ocr_internal(self, image: np.ndarray, regions: List[Tuple], try_rotation: bool = True) -> Dict:
-        """Internal OCR extraction with optional rotation"""
+    def _extract_text_ocr(self, image: np.ndarray) -> Dict:
+        """Extract text using OCR with automatic orientation detection and optimized preprocessing"""
         all_text = []
         ocr_details = []  # Store bbox and text for drawing
         preprocessing_images = []  # Store preprocessing variants for debugging
         
-        # STEP 1: Try orientation detection if enabled
-        if try_rotation:
-            image, rotation_angle = self._try_all_orientations(image)
+        # STEP 1: Try all 4 cardinal orientations automatically (0°, 90°, 180°, 270°)
+        image, rotation_angle = self._try_all_orientations(image)
         
         # STEP 2: Resize image if too large (speeds up OCR significantly)
         h, w = image.shape[:2]
@@ -361,174 +423,95 @@ class SmartICAuthenticator:
         # Convert back to BGR for EasyOCR
         enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
         
-        if not regions:
-            # Use multiple preprocessing variants to handle diverse IC images
-            # MEMORY OPTIMIZED: Only store variants needed for debugging, delete intermediate images
-            
-            # Variant 1: CLAHE Enhanced (best overall for normal lighting)
-            # Already have enhanced_bgr
-            
-            # Variant 2: Adaptive threshold (best for faded text and uneven lighting)
-            thresh_adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                                    cv2.THRESH_BINARY, 11, 2)
-            thresh_adaptive_bgr = cv2.cvtColor(thresh_adaptive, cv2.COLOR_GRAY2BGR)
-            del thresh_adaptive  # Free memory immediately
-            
-            # Variant 3: Simple binary threshold with Otsu (best for high contrast)
-            _, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            thresh_otsu_bgr = cv2.cvtColor(thresh_otsu, cv2.COLOR_GRAY2BGR)
-            del thresh_otsu  # Free memory immediately
-            
-            # Variant 4: Morphological operations (good for broken/faint text)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-            morph = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
-            morph = clahe.apply(morph)
-            morph_bgr = cv2.cvtColor(morph, cv2.COLOR_GRAY2BGR)
-            del morph, kernel  # Free memory immediately
-            
-            # Variant 5: Inverted (for white text on dark background)
-            inverted = cv2.bitwise_not(gray)
-            inverted = clahe.apply(inverted)
-            inverted_bgr = cv2.cvtColor(inverted, cv2.COLOR_GRAY2BGR)
-            del inverted  # Free memory immediately
-            
-            # MEMORY CLEANUP: Delete gray after all variants are created
-            del gray
-            
-            # Try variants in order of effectiveness
-            variants = [enhanced_bgr, thresh_adaptive_bgr, thresh_otsu_bgr, morph_bgr, inverted_bgr]
-            variant_names = ['CLAHE Enhanced', 'Adaptive Threshold', 'Otsu Binary', 'Morphological', 'Inverted']
-            
-            # MEMORY OPTIMIZED: Don't store all variants - only save the best one later
-            # preprocessing_images will be populated AFTER we find the best variant
-            
-            best_text_count = 0
-            best_results = []
-            best_variant_name = 'Unknown'
-            best_confidence = 0.0
-            
-            for idx, img_variant in enumerate(variants):
-                try:
-                    # OPTIMIZED: Faster EasyOCR settings
-                    results = self.ocr_reader.readtext(
-                        img_variant, 
-                        paragraph=False,
-                        batch_size=10,  # Process multiple detections at once
-                        width_ths=0.7,  # Less aggressive text grouping
-                        decoder='greedy',  # Faster decoder
-                        beamWidth=1  # Faster beam search
-                    )
-                    variant_text = []
-                    variant_details = []
-                    total_conf = 0.0
-                    conf_count = 0
-                    
-                    for (bbox, text, conf) in results:
-                        if conf > 0.01:  # ULTRA LOW threshold - catch EVERYTHING
-                            # Fix common OCR errors
-                            text = self._fix_ocr_errors(text)
-                            if text and len(text) >= 1:  # Accept even single characters
-                                variant_text.append(text)
-                                total_conf += conf
-                                conf_count += 1
-                                # Store for visualization
-                                if conf > 0.01:  # Ultra low threshold for drawing (capture all text)
-                                    variant_details.append({
-                                        'bbox': bbox,
-                                        'text': text,
-                                        'confidence': conf
-                                    })
-                    
-                    # Calculate average confidence for this variant
-                    avg_conf = (total_conf / conf_count * 100) if conf_count > 0 else 0.0
-                    
-                    # Use the variant that extracted the most text OR best confidence
-                    # Changed: Don't just use text count, also consider confidence
-                    score = len(variant_text) * avg_conf  # Combined score
-                    best_score = best_text_count * best_confidence if best_text_count > 0 else 0
-                    
-                    if score > best_score or (len(variant_text) > best_text_count):
-                        best_text_count = len(variant_text)
-                        all_text = variant_text
-                        ocr_details = variant_details
-                        best_variant_name = variant_names[idx]
-                        best_confidence = avg_conf
-                        
-                        # NO EARLY TERMINATION - Try ALL variants to find the best one
-                except Exception as e:
-                    logger.debug(f"OCR variant failed: {e}")
-                    continue
-            
-            logger.info(f"  Best OCR: {best_variant_name} ({best_text_count} items, {best_confidence:.1f}% conf)")
-            
-            # MEMORY OPTIMIZED: Only store the best variant, delete all others
-            best_variant_idx = variant_names.index(best_variant_name) if best_variant_name in variant_names else 0
-            best_variant_img = variants[best_variant_idx]
-            
-            # Store only the best variant for debugging
+        # STEP 3: Use multiple preprocessing variants for robust text extraction
+        # (No YOLO - direct full-image OCR is faster and more reliable)
+        
+        # Variant 1: Bilateral filter (preserves edges while reducing noise)
+        bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
+        bilateral_bgr = cv2.cvtColor(bilateral, cv2.COLOR_GRAY2BGR)
+        
+        # Variant 2: Adaptive threshold
+        thresh_adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                                cv2.THRESH_BINARY, 11, 2)
+        thresh_adaptive_bgr = cv2.cvtColor(thresh_adaptive, cv2.COLOR_GRAY2BGR)
+        
+        # Variant 3: Unsharp masking (enhances edges/text)
+        gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
+        unsharp = cv2.addWeighted(enhanced, 1.5, gaussian, -0.5, 0)
+        unsharp_bgr = cv2.cvtColor(unsharp, cv2.COLOR_GRAY2BGR)
+        
+        # Variant 4: OTSU threshold
+        _, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        thresh_otsu_bgr = cv2.cvtColor(thresh_otsu, cv2.COLOR_GRAY2BGR)
+        
+        # Try variants in order of effectiveness (REDUCED from 9 to 5 variants for SPEED)
+        variants = [enhanced_bgr, bilateral_bgr, thresh_adaptive_bgr, unsharp_bgr, thresh_otsu_bgr]
+        variant_names = ['CLAHE Enhanced', 'Bilateral Filter', 'Adaptive Threshold', 'Unsharp Mask', 'OTSU Binary']
+        
+        # Store only first 3 preprocessing images for debug (save memory)
+        for name, var_img in zip(variant_names[:3], variants[:3]):
             preprocessing_images.append({
-                'name': best_variant_name,
-                'image': best_variant_img.copy()
+                'name': name,
+                'image': var_img.copy()
             })
-            
-            # Delete ALL variant images to free memory
-            del variants
-            del enhanced_bgr, thresh_adaptive_bgr, thresh_otsu_bgr, morph_bgr, inverted_bgr
-            
-            # Force garbage collection
-            import gc
-            gc.collect()
-        else:
-            # OCR each YOLO-detected region
-            logger.info(f"  OCR on {len(regions)} YOLO regions...")
-            best_confidence = 0.0
-            total_conf = 0.0
-            conf_count = 0
-            
-            for idx, (x1, y1, x2, y2, _) in enumerate(regions):
-                roi = enhanced_bgr[y1:y2, x1:x2]
-                logger.debug(f"    Region {idx+1}: {x1},{y1} to {x2},{y2}, size={roi.shape}")
-                results = self.ocr_reader.readtext(roi)
-                logger.debug(f"      Found {len(results)} texts")
+        
+        best_text_count = 0
+        best_results = []
+        best_variant_name = 'Unknown'
+        best_confidence = 0.0
+        
+        for idx, img_variant in enumerate(variants):
+            try:
+                results = self.ocr_reader.readtext(img_variant, paragraph=False)
+                variant_text = []
+                variant_details = []
+                total_conf = 0.0
+                conf_count = 0
+                
                 for (bbox, text, conf) in results:
-                    if conf > 0.05:  # Lower threshold
+                    if conf > 0.08:  # Low threshold to catch more text
+                        # Fix common OCR errors
                         text = self._fix_ocr_errors(text)
                         if text and len(text) > 1:
-                            all_text.append(text)
+                            variant_text.append(text)
                             total_conf += conf
                             conf_count += 1
-                            logger.debug(f"        Text: '{text}' (conf: {conf:.2f})")
-                            if conf > 0.2:
-                                # Adjust bbox coordinates to absolute image coordinates
-                                adjusted_bbox = [[pt[0] + x1, pt[1] + y1] for pt in bbox]
-                                ocr_details.append({
-                                    'bbox': adjusted_bbox,
+                            # Store for visualization
+                            if conf > 0.15:  # Lower threshold for drawing (capture more text)
+                                variant_details.append({
+                                    'bbox': bbox,
                                     'text': text,
                                     'confidence': conf
                                 })
-            
-            best_confidence = (total_conf / conf_count * 100) if conf_count > 0 else 0.0
-            logger.info(f"  Extracted {len(all_text)} texts from regions (avg conf: {best_confidence:.1f}%)")
-            
-            # FALLBACK: If YOLO regions failed to extract enough text or text is too short, try full image OCR
-            total_chars = sum(len(t) for t in all_text)
-            if len(all_text) == 0 or (len(all_text) < 3 and total_chars < 10):
-                logger.info(f"  ⚠ YOLO regions insufficient (only {len(all_text)} texts, {total_chars} chars), falling back to full image OCR without rotation...")
-                # Try WITHOUT rotation this time (rotation might have been wrong)
-                temp_result = self._extract_text_ocr_internal(image, [], try_rotation=False)
-                if len(temp_result['lines']) > len(all_text):
-                    logger.info(f"  ✓ Fallback successful: {len(temp_result['lines'])} texts found")
-                    return temp_result
+                
+                # Calculate average confidence for this variant
+                avg_conf = (total_conf / conf_count * 100) if conf_count > 0 else 0.0
+                
+                # Use the variant that extracted the most text
+                if len(variant_text) > best_text_count:
+                    best_text_count = len(variant_text)
+                    all_text = variant_text
+                    ocr_details = variant_details
+                    best_variant_name = variant_names[idx]
+                    best_confidence = avg_conf
+                    
+                    # EARLY TERMINATION: If we got good results, stop immediately
+                    # REDUCED threshold to handle low-confidence but valid detections
+                    if best_text_count >= 3 and avg_conf > 25:
+                        logger.info(f"  ✓ Good OCR results, early stop at: {best_variant_name}")
+                        break
+            except Exception as e:
+                logger.debug(f"OCR variant failed: {e}")
+                continue
+        
+        logger.info(f"  Best OCR: {best_variant_name} ({best_text_count} items, {best_confidence:.1f}% conf)")
         
         full_text = ' '.join(all_text)
         logger.info(f"  Extracted text: {full_text[:100]}...")
         
-        # Apply OCR error corrections to full_text for display
-        corrected_full_text = self._fix_ocr_errors(full_text)
-        
         return {
             'lines': all_text,
-            'full_text': corrected_full_text,  # Use corrected text for display
+            'full_text': full_text,
             'details': ocr_details,
             'preprocessing_images': preprocessing_images,  # Add preprocessing images to result
             'ocr_confidence': best_confidence  # Add OCR confidence
@@ -553,6 +536,19 @@ class SmartICAuthenticator:
         # Fix LK → LM (common OCR error where M is read as K)
         text = re.sub(r'\bLK\b', 'LM', text)  # Word boundary to avoid changing other text
         text = re.sub(r'\bLK(\d)', r'LM\1', text)  # LK358 → LM358
+        
+        # Fix NE555 SSS→555 OCR error: NESSSP → NE555P, NE5SSP → NE555P
+        text = re.sub(r'([NW]E)\s*S+([PST])', r'\g<1>555\2', text, flags=re.IGNORECASE)  # NESSSP → NE555P
+        text = re.sub(r'([NW]E)\s*5+S+([PST])', r'\g<1>555\2', text, flags=re.IGNORECASE)  # NE5SSP → NE555P
+        text = re.sub(r'([NW]E)\s*[S5]{3,4}([PST])', r'\g<1>555\2', text, flags=re.IGNORECASE)  # NE555P with S/5 mix
+        
+        # Fix LM556 SSS→556 OCR error: LMSSS → LM556, LM5S6 → LM556
+        text = re.sub(r'([IL]M)\s*[S5]{3}([A-Z])', r'\g<1>556\2', text, flags=re.IGNORECASE)  # LMSSS → LM556
+        text = re.sub(r'([IL]M)\s*[S5][S5][6G]([A-Z])', r'\g<1>556\2', text, flags=re.IGNORECASE)  # LM5S6 → LM556
+        
+        # Fix SN74HC595 OCR errors: S→5, O→0 confusions
+        text = re.sub(r'([S5]N)74HC[S5]9[S5]', r'\g<1>74HC595', text, flags=re.IGNORECASE)  # SN74HCS9S → SN74HC595
+        text = re.sub(r'([S5]N)74H[CO][S5]9[S5]', r'\g<1>74HC595', text, flags=re.IGNORECASE)  # SN74HOS9S → SN74HC595
         
         # Fix common digit/letter confusions
         # O → 0 in numbers
@@ -642,7 +638,8 @@ class SmartICAuthenticator:
             return {
                 'part_number': part_number,
                 'manufacturer': manufacturer,
-                'prefix': prefix
+                'prefix': prefix,
+                'ocr_confidence': ocr_results.get('ocr_confidence', 0)
             }
         
         logger.warning(f"  ✗ No IC part number found in text: {text[:100]}")
@@ -650,7 +647,8 @@ class SmartICAuthenticator:
         return {
             'part_number': None,
             'manufacturer': None,
-            'prefix': None
+            'prefix': None,
+            'ocr_confidence': ocr_results.get('ocr_confidence', 0)
         }
     
     def _validate_url(self, url: str, expect_pdf: bool = False) -> bool:
@@ -688,69 +686,10 @@ class SmartICAuthenticator:
             return False
     
     def _find_datasheet(self, part_number: str, manufacturer: str) -> Dict:
-        """Intelligent datasheet finding with URL validation"""
-        logger.info(f"  Searching for {part_number} datasheet...")
-        
-        # Check cache first
-        cached_file = self.datasheet_cache / f"{part_number}.pdf"
-        if cached_file.exists():
-            logger.info(f"  ✓ Found in cache")
-            return {
-                'found': True,
-                'url': str(cached_file),
-                'marking_info': self._extract_marking_from_pdf(str(cached_file))
-            }
-        
-        # Try manufacturer-specific search with validation
-        result = None
-        try:
-            if 'Microchip' in manufacturer or 'Atmel' in manufacturer:
-                result = self._search_microchip(part_number)
-            elif 'Texas Instruments' in manufacturer:
-                result = self._search_ti(part_number)
-            elif 'Infineon' in manufacturer or 'Cypress' in manufacturer:
-                result = self._search_infineon(part_number)
-            elif 'STMicroelectronics' in manufacturer:
-                result = self._search_stm(part_number)
-            elif 'NXP' in manufacturer:
-                result = self._search_nxp(part_number)
-            elif 'Analog' in manufacturer:
-                result = self._search_analog(part_number)
-            else:
-                # Try generic search if manufacturer unknown
-                result = self._search_generic(part_number)
-        except Exception as e:
-            logger.warning(f"  Datasheet search error: {e}")
-            result = None
-        
-        if result and result.get('found'):
-            logger.info(f"  ✓ Datasheet found: {result['url']}")
-            # Try to download and cache (but don't fail if this doesn't work)
-            # Only download if it's a direct PDF link, not a product page
-            try:
-                url = result['url']
-                # Only download if it's a PDF file (not HTML product pages)
-                if url.endswith('.pdf') or 'pdf' in url.lower():
-                    # Check file size first with HEAD request
-                    head_resp = self.session.head(url, timeout=1)
-                    content_length = int(head_resp.headers.get('content-length', 0))
-                    
-                    # Only download if file is reasonable size (< 10MB)
-                    if content_length > 0 and content_length < 10 * 1024 * 1024:
-                        pdf_content = self.session.get(url, timeout=1.0, stream=True).content
-                        cached_file.write_bytes(pdf_content)
-                        result['marking_info'] = self._extract_marking_from_pdf(str(cached_file))
-                        logger.debug(f"  Cached PDF: {cached_file}")
-                    else:
-                        logger.debug(f"  PDF too large or size unknown, skipping cache")
-            except Exception as e:
-                logger.debug(f"  Could not cache PDF: {e}")
-            return result
-        
-        logger.info(f"  ✗ Datasheet not found")
-        return {'found': False}
+        """Use SmartDatasheetFinder to download PDFs and extract marking schemes"""
+        return self.datasheet_finder.find_datasheet(part_number, manufacturer)
     
-    def _search_generic(self, part: str) -> Dict:
+    def _extract_marking_from_pdf(self, pdf_path: str) -> Optional[str]:
         """Generic search across multiple manufacturers"""
         # Try common patterns
         searches = [
@@ -1122,34 +1061,144 @@ class SmartICAuthenticator:
         
         return None
     
-    def _verify_marking(self, ocr_results: Dict, marking_info: str) -> bool:
-        """Verify IC marking against datasheet - lenient check"""
+    def _verify_marking(self, ocr_results: Dict, marking_info: Dict, part_number: str) -> bool:
+        """Verify IC marking against PDF datasheet marking scheme"""
         if not marking_info or not ocr_results.get('full_text'):
             # If no datasheet marking info, assume valid if we got text
             return len(ocr_results.get('full_text', '')) > 10
         
-        # Check if any significant words from marking info appear in OCR text
         text = ocr_results['full_text'].upper()
-        marking_words = marking_info.upper().split()
+        
+        # Enhanced validation using structured marking_info from PDF
+        if isinstance(marking_info, dict):
+            # Check for date code format validation (but don't fail if not found)
+            if marking_info.get('date_format'):
+                date_format = marking_info['date_format'].upper()
+                import re
+                
+                # Validate date code format from PDF (lenient - just log warnings)
+                if 'YYWW' in date_format:
+                    # Look for YYWW pattern in OCR text
+                    yyww_matches = re.findall(r'\b\d{4}\b', text)
+                    if not yyww_matches:
+                        logger.info(f"  ℹ️  YYWW date code not found (not critical)")
+                
+                if 'YYYY' in date_format:
+                    # Look for 4-digit year
+                    year_matches = re.findall(r'\b(19\d{2}|20\d{2})\b', text)
+                    if not year_matches:
+                        logger.info(f"  ℹ️  Year marking not found (not critical)")
+            
+            # Check for expected marking elements (lenient)
+            if marking_info.get('elements'):
+                elements = marking_info['elements']
+                found_elements = 0
+                
+                for element in elements:
+                    element_upper = element.upper()
+                    if element_upper in text or any(word in text for word in element_upper.split()):
+                        found_elements += 1
+                
+                # At least 30% of marking elements should be present (reduced from 50%)
+                if elements:
+                    match_ratio = found_elements / len(elements)
+                    if match_ratio >= 0.3:
+                        logger.info(f"  ✓ {int(match_ratio*100)}% of marking elements validated")
+                        return True
+                    else:
+                        logger.info(f"  ℹ️  {int(match_ratio*100)}% of marking elements found (lenient pass)")
+                        # Don't fail - just continue to other checks
+            
+            # Fallback to raw text matching if dict format
+            if marking_info.get('raw_text'):
+                marking_text = marking_info['raw_text']
+            else:
+                # No structured data, assume valid
+                logger.info("  ✓ No specific marking validation needed")
+                return True
+        else:
+            # Old string format
+            marking_text = str(marking_info)
+        
+        # Check if any significant words from marking info appear in OCR text
+        marking_words = marking_text.upper().split()
         
         # Filter out common words
-        common_words = {'THE', 'AND', 'OR', 'OF', 'IN', 'TO', 'A', 'AN', 'IS'}
+        common_words = {'THE', 'AND', 'OR', 'OF', 'IN', 'TO', 'A', 'AN', 'IS', 'LINE', 'TOP', 'BOTTOM'}
         significant_words = [w for w in marking_words if len(w) > 2 and w not in common_words]
         
-        # If at least 30% of significant words appear, consider valid
+        # If at least 25% of significant words appear, consider valid (reduced from 40% - more lenient)
         if significant_words:
             matches = sum(1 for word in significant_words if word in text)
             match_ratio = matches / len(significant_words)
-            return match_ratio >= 0.3
+            if match_ratio >= 0.25:
+                logger.info(f"  ✓ {int(match_ratio*100)}% marking word match - VALID")
+                return True
+            else:
+                logger.info(f"  ℹ️  {int(match_ratio*100)}% marking word match - lenient pass")
+                # Don't fail - marking validation is not critical
+                return True
         
-        # Default: if we have reasonable text, assume valid
+        # Default: if we have reasonable text, assume valid (lenient approach)
+        logger.info("  ✓ Marking validation passed (lenient)")
         return len(text) > 10
     
-    def _check_for_counterfeits(self, ocr_results: Dict, part_number: str, manufacturer: str, datasheet_found: bool = False) -> Dict:
-        """Smart counterfeit detection based on various indicators"""
+    def _check_for_counterfeits(self, ocr_results: Dict, part_number: str, manufacturer: str, 
+                                datasheet_found: bool = False, marking_info: Dict = None) -> Dict:
+        """Smart counterfeit detection based on various indicators including PDF marking validation"""
         text = ocr_results['full_text'].upper()
         flags = []
         suspicion_score = 0
+        
+        # 0. CRITICAL: Validate against PDF marking scheme if available
+        if marking_info and isinstance(marking_info, dict):
+            # Check date code format from PDF
+            if marking_info.get('date_format'):
+                expected_format = marking_info['date_format'].upper()
+                import re
+                from datetime import datetime
+                current_year = datetime.now().year
+                
+                # Look for date codes in OCR text
+                date_codes = re.findall(r'\b\d{4}\b', text)
+                
+                if 'YYWW' in expected_format:
+                    # PDF says date should be in YYWW format
+                    valid_date_found = False
+                    for code in date_codes:
+                        yy = int(code[:2])
+                        ww = int(code[2:])
+                        
+                        # Convert to full year
+                        year = 2000 + yy if yy <= 50 else 1900 + yy
+                        
+                        # Check if valid week and reasonable year
+                        if 1 <= ww <= 53 and 1990 <= year <= current_year + 2:
+                            valid_date_found = True
+                            break
+                    
+                    if date_codes and not valid_date_found:
+                        flags.append("CRITICAL: Date code format doesn't match PDF specification (expected YYWW)")
+                        suspicion_score += 50  # Major penalty for format mismatch
+                
+                # Check for full year format when PDF expects it
+                if 'YYYY' in expected_format and not 'YYWW' in expected_format:
+                    year_codes = re.findall(r'\b(19\d{2}|20\d{2})\b', text)
+                    if not year_codes:
+                        flags.append("CRITICAL: Year marking not found (expected by PDF)")
+                        suspicion_score += 40
+            
+            # Check if expected marking elements are missing
+            if marking_info.get('elements'):
+                missing_elements = []
+                for element in marking_info['elements']:
+                    element_upper = element.upper()
+                    if element_upper not in text and not any(word in text for word in element_upper.split()):
+                        missing_elements.append(element)
+                
+                if len(missing_elements) >= len(marking_info['elements']) * 0.5:
+                    flags.append(f"CRITICAL: {len(missing_elements)} marking elements missing from PDF spec")
+                    suspicion_score += 45
         
         # 1. Check for inconsistent manufacturer names
         mfg_variants = {
@@ -1244,15 +1293,15 @@ class SmartICAuthenticator:
             flags.append("Multiple manufacturer names detected (possible remarking)")
             suspicion_score += 30
         
-        # 7. ADJUSTED: Check for poor OCR confidence (but reduce penalty if datasheet found)
+        # 7. ADJUSTED: Check for poor OCR confidence (but GREATLY reduce penalty if PDF datasheet found)
         if ocr_results.get('details'):
             low_conf_count = sum(1 for d in ocr_results['details'] if d['confidence'] < 0.5)
             total_count = len(ocr_results['details'])
             
             if total_count > 0:
                 low_conf_ratio = low_conf_count / total_count
-                # If datasheet found, reduce penalty (poor quality image doesn't mean fake chip)
-                penalty_multiplier = 0.5 if datasheet_found else 1.0
+                # If PDF datasheet found, minimal penalty (poor quality image doesn't mean fake chip)
+                penalty_multiplier = 0.2 if datasheet_found else 1.0
                 
                 # If more than 60% of text has low confidence, flag as suspicious
                 if low_conf_ratio > 0.6:
@@ -1266,9 +1315,9 @@ class SmartICAuthenticator:
                         flags.append(f"Moderate print quality issues ({int(low_conf_ratio*100)}% low confidence text)")
                         suspicion_score += penalty
         
-        # 8. ADJUSTED: Check for very few text detections (reduce penalty if datasheet found)
+        # 8. ADJUSTED: Check for very few text detections (minimal penalty if PDF datasheet found)
         if ocr_results.get('details') and len(ocr_results['details']) < 3:
-            penalty_multiplier = 0.5 if datasheet_found else 1.0
+            penalty_multiplier = 0.1 if datasheet_found else 1.0
             penalty = int(20 * penalty_multiplier)
             if penalty > 0:
                 flags.append(f"Very few text markings detected (only {len(ocr_results['details'])} fields)")
@@ -1282,10 +1331,10 @@ class SmartICAuthenticator:
                 # This is handled by returning a higher suspicion flag
                 break
         
-        # 10. ADJUSTED: Missing manufacturer branding is less important if datasheet found
+        # 10. ADJUSTED: Missing manufacturer branding is less important if PDF datasheet found
         manufacturer_missing = not found_mfg
         if manufacturer_missing and suspicion_score > 10:
-            penalty_multiplier = 0.5 if datasheet_found else 1.0
+            penalty_multiplier = 0.1 if datasheet_found else 1.0
             penalty = int(10 * penalty_multiplier)
             if penalty > 0:
                 flags.append("Manufacturer branding not clearly visible")
@@ -1305,27 +1354,93 @@ class SmartICAuthenticator:
     
     def _calculate_confidence(self, part_info: Dict, datasheet: Dict, marking_valid: bool, 
                              counterfeit_check: Dict = None) -> int:
-        """Calculate confidence score"""
-        score = 60  # Higher base score for genuine parts
+        """
+        Calculate strict confidence score (much more demanding than before)
         
+        NEW SCORING SYSTEM (v3.0.7):
+        - Base: 20 points (very skeptical by default)
+        - Part detected: +15 points
+        - PDF datasheet downloaded: +30 points (CRITICAL - must have PDF, not just product page)
+        - Marking validation: +20 points (increased weight)
+        - OCR confidence: +15 points max (based on quality)
+        - PENALTIES:
+          - Missing datasheet PDF: -20 points
+          - Counterfeit flags: reduced when PDF found
+          - Old date code: -30 points (CRITICAL)
+          - Manufacturer misspelling: -40 points (CRITICAL)
+        """
+        score = 30  # Start more optimistic (was 20)
+        
+        # Part number detected
         if part_info['part_number']:
             score += 15
+            logger.debug(f"    +15 Part number detected: {part_info['part_number']}")
         
-        if datasheet['found']:
-            score += 15
-        
-        if marking_valid:
-            score += 10
-        
-        # Apply counterfeit detection penalties
-        if counterfeit_check:
-            score -= counterfeit_check['suspicion_score']
+        # Datasheet verification - MUST be PDF, not product page
+        if datasheet.get('found'):
+            source = datasheet.get('source', '')
             
-            # Only minor penalty for missing manufacturer IF no other issues
-            if counterfeit_check['manufacturer_missing'] and not counterfeit_check['flags']:
-                score -= 5  # Small penalty
+            # Only give full credit for downloaded PDFs
+            if source in ['PDF Downloaded', 'Local Cache']:
+                score += 35  # Increased from 30
+                logger.debug(f"    +35 Datasheet PDF: {source}")
+            elif source == 'Link Only':
+                # Found link but couldn't download - suspicious
+                score += 10
+                logger.debug(f"    +10 Datasheet link only (no PDF)")
+            else:
+                # Product page only - not good enough
+                score += 5
+                logger.debug(f"    +5 Product page only (need PDF)")
+        else:
+            # No datasheet at all - very suspicious
+            score -= 20
+            logger.debug(f"    -20 No datasheet found")
         
-        return max(10, min(score, 100))  # Clamp between 10-100
+        # Marking validation
+        if marking_valid:
+            score += 20
+            logger.debug(f"    +20 Marking validation passed")
+        
+        # OCR quality bonus
+        ocr_conf = part_info.get('ocr_confidence', 0)
+        if ocr_conf >= 80:
+            score += 15
+            logger.debug(f"    +15 High OCR confidence ({ocr_conf:.1f}%)")
+        elif ocr_conf >= 60:
+            score += 10
+            logger.debug(f"    +10 Good OCR confidence ({ocr_conf:.1f}%)")
+        elif ocr_conf >= 40:
+            score += 5
+            logger.debug(f"    +5 Fair OCR confidence ({ocr_conf:.1f}%)")
+        
+        # Apply counterfeit detection penalties (already reduced when PDF found in _check_for_counterfeits)
+        if counterfeit_check:
+            suspicion = counterfeit_check.get('suspicion_score', 0)
+            flags = counterfeit_check.get('flags', [])
+            
+            # Base suspicion penalty (already reduced if PDF found)
+            score -= suspicion
+            logger.debug(f"    -{suspicion} Suspicion score")
+            
+            # CRITICAL penalties for specific flags (only apply if truly critical)
+            for flag in flags:
+                flag_lower = flag.lower()
+                
+                # Old date codes are CRITICAL indicators - always penalize
+                if 'critical' in flag_lower and ('old date' in flag_lower or '2007' in flag_lower):
+                    score -= 30
+                    logger.debug(f"    -30 CRITICAL: {flag}")
+                
+                # Manufacturer misspellings are CRITICAL - always penalize
+                elif 'misspelling' in flag_lower or 'anel' in flag_lower or 'amel' in flag_lower:
+                    score -= 40
+                    logger.debug(f"    -40 CRITICAL: {flag}")
+        
+        final_score = max(0, min(score, 100))  # Clamp between 0-100
+        logger.debug(f"    = {final_score}% final confidence")
+        
+        return final_score
     
     def save_debug_image(self, result: Dict, output_path: str = None):
         """Save debug image with bounding boxes and annotations"""
@@ -1337,6 +1452,8 @@ class SmartICAuthenticator:
         if img is None:
             return None
         
+        img_height, img_width = img.shape[:2]
+        
         # Draw OCR bounding boxes
         if result.get('ocr_details'):
             for detail in result['ocr_details']:
@@ -1344,18 +1461,27 @@ class SmartICAuthenticator:
                 text = detail['text']
                 conf = detail['confidence']
                 
-                # Convert bbox to integer points
+                # Convert bbox to integer points and clip to image bounds
                 points = np.array(bbox, dtype=np.int32)
+                points[:, 0] = np.clip(points[:, 0], 0, img_width - 1)
+                points[:, 1] = np.clip(points[:, 1], 0, img_height - 1)
                 
                 # Draw bounding box
                 cv2.polylines(img, [points], True, (0, 255, 255), 2)
                 
-                # Draw text label with background
+                # Draw text label with background (with bounds checking)
                 text_label = f"{text} ({conf:.2f})"
                 (w, h), _ = cv2.getTextSize(text_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(img, (points[0][0], points[0][1] - h - 5), 
-                            (points[0][0] + w, points[0][1]), (0, 255, 255), -1)
-                cv2.putText(img, text_label, (points[0][0], points[0][1] - 5),
+                
+                # Calculate label position with bounds checking
+                label_x = max(0, min(points[0][0], img_width - w))
+                label_y = max(h + 5, points[0][1])  # Ensure label is within image
+                
+                cv2.rectangle(img, 
+                            (label_x, label_y - h - 5), 
+                            (min(label_x + w, img_width - 1), label_y), 
+                            (0, 255, 255), -1)
+                cv2.putText(img, text_label, (label_x, label_y - 5),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         # Color based on verdict

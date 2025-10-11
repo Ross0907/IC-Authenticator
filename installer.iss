@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "6.0.0"
+#define MyAppVersion "7.0.15"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"
@@ -55,10 +55,12 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 ; Main Executable
 Source: "ICAuthenticator.exe"; DestDir: "{app}"; Flags: ignoreversion
 
-; Python Application Files
+; Python Application Files (only include files that exist)
 Source: "gui_classic_production.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "smart_ic_authenticator.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "smart_datasheet_finder.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "batch_authenticator.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "system_check.py"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Configuration & Data Files
 Source: "config.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -66,9 +68,6 @@ Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icon.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-
-; YOLO Model
-Source: "yolov8n.pt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Dependencies
 Source: "requirements_production.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -108,10 +107,13 @@ Type: filesandordirs; Name: "{app}\debug_output"
 Type: filesandordirs; Name: "{app}\final_production_debug"
 Type: filesandordirs; Name: "{app}\debug_preprocessing"
 Type: filesandordirs; Name: "{app}\production_debug"
-; Type: filesandordirs; Name: "{app}\test_images"  ; KEEP test_images - don't delete
-Type: files; Name: "{app}\yolov8n.pt"
-Type: files; Name: "{app}\*.pt"
 Type: filesandordirs; Name: "{app}\runs"
+; Log files
+Type: files; Name: "{app}\launcher_error.log"
+Type: files; Name: "{app}\*.log"
+; Python cache
+Type: filesandordirs; Name: "{app}\*\__pycache__"
+; Type: filesandordirs; Name: "{app}\test_images"  ; KEEP test_images - don't delete
 
 [Code]
 var

@@ -11,22 +11,38 @@ import torch
 import ctypes
 import tempfile
 import urllib.request
+import urllib.parse
 from pathlib import Path
+
+# Safe print function for Windows encoding issues with Unicode characters
+def safe_print(msg):
+    """Print message without Unicode encoding errors on Windows console"""
+    try:
+        print(msg)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Fallback: replace problematic characters
+        try:
+            ascii_msg = str(msg).encode('ascii', errors='replace').decode('ascii')
+            print(ascii_msg)
+        except:
+            pass  # Silent fail - don't crash on print errors
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                              QTextEdit, QTextBrowser, QTabWidget, QGroupBox, QScrollArea, 
                              QMessageBox, QProgressBar, QGridLayout, QSplitter,
-                             QCheckBox, QDialog, QTableWidget, QTableWidgetItem, QHeaderView)
+                             QCheckBox, QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+                             QSpinBox, QToolBar)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QUrl
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QTextCursor, QIcon
 
-# Try to import QWebEngineView for PDF viewing (optional - fallback to browser if not available)
+# Import PDF rendering library
 try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
-    WEBENGINE_AVAILABLE = True
+    import fitz  # PyMuPDF
+    PDF_AVAILABLE = True
 except ImportError:
-    WEBENGINE_AVAILABLE = False
-    print("Warning: QWebEngineView not available - PDF viewing will fall back to system viewer")
+    PDF_AVAILABLE = False
+    safe_print("Warning: PyMuPDF not available - PDF viewer disabled")
 
 # Try to import ultimate authenticator, fallback to fresh YOLO
 try:
@@ -137,6 +153,14 @@ class BatchProcessingThread(QThread):
                     # Emit individual result
                     self.batch_result.emit(result)
                     
+                    # MEMORY CLEANUP: Remove large image data after emitting
+                    if 'preprocessing_images' in result:
+                        del result['preprocessing_images']
+                    if 'debug_ocr_image' in result:
+                        result['debug_ocr_image'] = None
+                    if 'debug_variants' in result:
+                        result['debug_variants'] = []
+                    
                     # Count results based on verdict
                     verdict = result.get('verdict', 'ERROR')
                     if verdict == 'AUTHENTIC':
@@ -149,6 +173,11 @@ class BatchProcessingThread(QThread):
                         counterfeit_count += 1
                     else:
                         error_count += 1
+                    
+                    # Force garbage collection every 5 images
+                    if idx % 5 == 0:
+                        import gc
+                        gc.collect()
                     
                 except Exception as e:
                     error_count += 1
@@ -262,6 +291,180 @@ class ImageViewerDialog(QMessageBox):
         return super().eventFilter(obj, event)
 
 
+class PDFViewerDialog(QDialog):
+    """Embedded PDF viewer dialog"""
+    def __init__(self, pdf_path, parent=None):
+        super().__init__(parent)
+        self.pdf_path = pdf_path
+        self.current_page = 0
+        self.zoom_level = 1.0
+        self.doc = None
+        
+        self.setWindowTitle(f"PDF Viewer - {os.path.basename(pdf_path)}")
+        self.setModal(False)
+        self.resize(1100, 1200)  # Made bigger: was 900x1000, now 1100x1200
+        
+        # Apply dark theme
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+            }
+            QPushButton {
+                background-color: #2d2d2d;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                padding: 8px 15px;
+                border-radius: 4px;
+                font-size: 11pt;
+            }
+            QPushButton:hover {
+                background-color: #3d3d3d;
+                border-color: #555;
+            }
+            QPushButton:disabled {
+                background-color: #1a1a1a;
+                color: #666;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+            QSpinBox {
+                background-color: #2d2d2d;
+                color: #e0e0e0;
+                border: 1px solid #444;
+                padding: 5px;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        
+        # Toolbar
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        
+        # Navigation buttons
+        self.prev_btn = QPushButton("◀ Previous")
+        self.prev_btn.clicked.connect(self.prev_page)
+        toolbar_layout.addWidget(self.prev_btn)
+        
+        # Page indicator
+        self.page_label = QLabel("Page 1 of 1")
+        toolbar_layout.addWidget(self.page_label)
+        
+        # Go to page
+        self.page_spin = QSpinBox()
+        self.page_spin.setMinimum(1)
+        self.page_spin.valueChanged.connect(self.goto_page)
+        toolbar_layout.addWidget(self.page_spin)
+        
+        self.next_btn = QPushButton("Next ▶")
+        self.next_btn.clicked.connect(self.next_page)
+        toolbar_layout.addWidget(self.next_btn)
+        
+        toolbar_layout.addStretch()
+        
+        # Zoom controls
+        zoom_out_btn = QPushButton("🔍-")
+        zoom_out_btn.clicked.connect(lambda: self.change_zoom(-0.2))
+        toolbar_layout.addWidget(zoom_out_btn)
+        
+        self.zoom_label = QLabel("100%")
+        toolbar_layout.addWidget(self.zoom_label)
+        
+        zoom_in_btn = QPushButton("🔍+")
+        zoom_in_btn.clicked.connect(lambda: self.change_zoom(0.2))
+        toolbar_layout.addWidget(zoom_in_btn)
+        
+        layout.addWidget(toolbar)
+        
+        # PDF display area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #2a2a2a; }")
+        
+        self.pdf_label = QLabel()
+        self.pdf_label.setAlignment(Qt.AlignCenter)
+        self.pdf_label.setStyleSheet("background-color: #2a2a2a;")
+        scroll_area.setWidget(self.pdf_label)
+        
+        layout.addWidget(scroll_area)
+        
+        # Load PDF
+        self.load_pdf()
+        
+    def load_pdf(self):
+        """Load PDF file and display first page"""
+        if not PDF_AVAILABLE:
+            self.pdf_label.setText("⚠ PyMuPDF not installed\n\nInstall with: pip install PyMuPDF")
+            return
+            
+        try:
+            self.doc = fitz.open(self.pdf_path)
+            self.page_spin.setMaximum(len(self.doc))
+            self.render_page()
+        except Exception as e:
+            self.pdf_label.setText(f"❌ Error loading PDF:\n{str(e)}")
+            
+    def render_page(self):
+        """Render current page"""
+        if not self.doc:
+            return
+            
+        try:
+            page = self.doc[self.current_page]
+            
+            # Render at higher resolution for better quality
+            mat = fitz.Matrix(2.0 * self.zoom_level, 2.0 * self.zoom_level)
+            pix = page.get_pixmap(matrix=mat)
+            
+            # Convert to QImage
+            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(img)
+            
+            self.pdf_label.setPixmap(pixmap)
+            
+            # Update controls
+            self.page_label.setText(f"Page {self.current_page + 1} of {len(self.doc)}")
+            self.page_spin.setValue(self.current_page + 1)
+            self.zoom_label.setText(f"{int(self.zoom_level * 100)}%")
+            
+            # Enable/disable navigation
+            self.prev_btn.setEnabled(self.current_page > 0)
+            self.next_btn.setEnabled(self.current_page < len(self.doc) - 1)
+            
+        except Exception as e:
+            self.pdf_label.setText(f"❌ Error rendering page:\n{str(e)}")
+            
+    def next_page(self):
+        """Go to next page"""
+        if self.current_page < len(self.doc) - 1:
+            self.current_page += 1
+            self.render_page()
+            
+    def prev_page(self):
+        """Go to previous page"""
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.render_page()
+            
+    def goto_page(self, page_num):
+        """Go to specific page"""
+        self.current_page = page_num - 1
+        self.render_page()
+        
+    def change_zoom(self, delta):
+        """Change zoom level"""
+        self.zoom_level = max(0.5, min(3.0, self.zoom_level + delta))
+        self.render_page()
+        
+    def closeEvent(self, event):
+        """Clean up when closing"""
+        if self.doc:
+            self.doc.close()
+        super().closeEvent(event)
+
+
 class ICAuthenticatorGUI(QMainWindow):
     """Main GUI Application for IC Authentication System"""
     
@@ -269,6 +472,7 @@ class ICAuthenticatorGUI(QMainWindow):
         super().__init__()
         self.current_image_path = None
         self.current_results = None
+        self.current_pdf_path = None  # Track current PDF for viewer
         self.dark_mode = True
         self.processing_thread = None
         self.batch_results = []  # Store batch processing results
@@ -304,16 +508,16 @@ class ICAuthenticatorGUI(QMainWindow):
                 self.app_icon = QIcon(icon_path)
                 if not self.app_icon.isNull():
                     self.setWindowIcon(self.app_icon)
-                    print(f"✓ Window icon set from: {icon_path}")
+                    safe_print(f"OK: Window icon set from: {icon_path}")
                 else:
                     # Try PNG as fallback
                     icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'icon.png'))
                     if os.path.exists(icon_path):
                         self.app_icon = QIcon(icon_path)
                         self.setWindowIcon(self.app_icon)
-                        print(f"✓ Window icon set from PNG: {icon_path}")
+                        safe_print(f"OK: Window icon set from PNG: {icon_path}")
         except Exception as e:
-            print(f"Could not set window icon: {e}")
+            safe_print(f"Could not set window icon: {e}")
         
         # Enable dark title bar on Windows 10/11
         if sys.platform == 'win32':
@@ -325,7 +529,7 @@ class ICAuthenticatorGUI(QMainWindow):
                     hwnd, 20, ctypes.byref(value), ctypes.sizeof(value)
                 )
             except Exception as e:
-                print(f"Could not set dark title bar: {e}")
+                safe_print(f"Could not set dark title bar: {e}")
         
         # Central widget
         central_widget = QWidget()
@@ -595,9 +799,10 @@ class ICAuthenticatorGUI(QMainWindow):
         
         # Verdict display
         self.verdict_label = QLabel("Awaiting Analysis...")
-        self.verdict_label.setFont(QFont("Arial", 18, QFont.Bold))
+        self.verdict_label.setFont(QFont("Arial", 16, QFont.Bold))  # Reduced from 18 to 16
         self.verdict_label.setAlignment(Qt.AlignCenter)
-        self.verdict_label.setMinimumHeight(80)
+        self.verdict_label.setMinimumHeight(100)  # Increased from 80 to 100
+        self.verdict_label.setWordWrap(True)  # Enable word wrapping for long text
         self.verdict_label.setStyleSheet("padding: 20px; border: 2px solid #444; border-radius: 5px;")
         layout.addWidget(self.verdict_label)
         
@@ -668,9 +873,20 @@ class ICAuthenticatorGUI(QMainWindow):
         datasheet_group = QGroupBox("Datasheet Information")
         datasheet_layout = QVBoxLayout()
         
+        # Add button row at top
+        datasheet_btn_layout = QHBoxLayout()
+        self.view_pdf_btn = QPushButton("📄 View PDF")
+        self.view_pdf_btn.setEnabled(False)
+        self.view_pdf_btn.clicked.connect(self.view_pdf_datasheet)
+        self.view_pdf_btn.setToolTip("Open embedded PDF viewer")
+        datasheet_btn_layout.addWidget(self.view_pdf_btn)
+        datasheet_btn_layout.addStretch()
+        datasheet_layout.addLayout(datasheet_btn_layout)
+        
         self.datasheet_text = QTextBrowser()  # Changed from QTextEdit
         self.datasheet_text.setReadOnly(True)
-        self.datasheet_text.setOpenExternalLinks(True)  # Make URLs clickable
+        self.datasheet_text.setOpenExternalLinks(False)  # Keep links from clearing content
+        self.datasheet_text.anchorClicked.connect(self.on_datasheet_link_clicked)  # Custom handler for embedded viewer
         datasheet_layout.addWidget(self.datasheet_text)
         
         datasheet_group.setLayout(datasheet_layout)
@@ -859,9 +1075,34 @@ class ICAuthenticatorGUI(QMainWindow):
         
         if not results.get('success', False):
             QMessageBox.critical(self, "Error", results.get('error', 'Unknown error'))
+            # Clean up on error
+            import gc
+            gc.collect()
             return
             
         self.current_results = results
+        
+        # MEMORY CLEANUP: Remove large numpy arrays from results after displaying
+        # Keep only essential data for display
+        if 'debug_ocr_image' in results and results['debug_ocr_image'] is not None:
+            # Already displayed, can remove
+            del results['debug_ocr_image']
+        
+        if 'debug_variants' in results:
+            # Already displayed in debug tab, can remove
+            del results['debug_variants']
+        
+        if 'preprocessing_images' in results:
+            # Already displayed, can remove
+            del results['preprocessing_images']
+        
+        # Force garbage collection immediately after display
+        import gc
+        gc.collect()
+        
+        # Clear GPU cache if using CUDA
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Update status information
         if 'processing_time' in results:
@@ -981,12 +1222,43 @@ class ICAuthenticatorGUI(QMainWindow):
         if results.get('datasheet_found', False):
             datasheet_html += f"<p><b>Status:</b> ✅ Datasheet Found</p>"
             datasheet_html += f"<p><b>Source:</b> {results.get('datasheet_source', 'Unknown')}</p>"
-            if results.get('datasheet_url'):
-                url = results['datasheet_url']
-                datasheet_html += f"<p><b>URL:</b> <a href='{url}' style='color: #4A9EFF;'>{url}</a></p>"
+            
+            # Show URL (manufacturer URL if available, otherwise local file)
+            url = results.get('datasheet_url')
+            if url:
+                # Check if it's a local file URL or web URL
+                if url.startswith('file://'):
+                    datasheet_html += f"<p><b>Datasheet:</b> ✅ Cached locally</p>"
+                else:
+                    datasheet_html += f"<p><b>Manufacturer URL:</b> <a href='{url}' style='color: #4A9EFF;'>{url}</a></p>"
+            
+            # Enable PDF viewer button if local PDF exists
+            local_file = results.get('datasheet_local_file') or results.get('datasheet_url')
+            if local_file and local_file.startswith('file://'):
+                # Extract path from file:// URI
+                if local_file.startswith('file:///'):
+                    pdf_path = local_file.replace('file:///', '', 1)
+                else:
+                    pdf_path = local_file.replace('file://', '', 1)
+                
+                pdf_path = urllib.parse.unquote(pdf_path)
+                pdf_path = os.path.normpath(pdf_path)
+                
+                if os.path.exists(pdf_path):
+                    self.current_pdf_path = pdf_path
+                    self.view_pdf_btn.setEnabled(True)
+                    datasheet_html += f"<p><b>Local PDF:</b> ✅ Available (click 'View PDF' button)</p>"
+                else:
+                    self.view_pdf_btn.setEnabled(False)
+                    self.current_pdf_path = None
+            else:
+                self.view_pdf_btn.setEnabled(False)
+                self.current_pdf_path = None
         else:
             datasheet_html += "<p><b>Status:</b> ❌ Datasheet Not Found</p>"
             datasheet_html += "<p>This could indicate a rare/obsolete part or potentially counterfeit IC</p>"
+            self.view_pdf_btn.setEnabled(False)
+            self.current_pdf_path = None
             
         self.datasheet_text.setHtml(datasheet_html)
         
@@ -1121,6 +1393,10 @@ class ICAuthenticatorGUI(QMainWindow):
         # Force garbage collection to free memory immediately
         import gc
         gc.collect()
+        
+        # Clear GPU cache if using CUDA
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     def batch_complete(self, summary):
         """Handle completion of batch processing"""
@@ -1260,6 +1536,7 @@ class ICAuthenticatorGUI(QMainWindow):
             if datasheet_found and result.get('datasheet_url'):
                 # Create clickable button for found datasheets
                 datasheet_btn = QPushButton("✅ Found")
+                datasheet_local_file = result.get('datasheet_local_file')
                 datasheet_url = result['datasheet_url']
                 datasheet_btn.setStyleSheet("""
                     QPushButton {
@@ -1276,8 +1553,17 @@ class ICAuthenticatorGUI(QMainWindow):
                     }
                 """)
                 datasheet_btn.setCursor(Qt.PointingHandCursor)
-                datasheet_btn.clicked.connect(lambda checked, url=datasheet_url: self.open_datasheet_url(url))
-                datasheet_btn.setToolTip(f"Click to open datasheet:\n{datasheet_url}")
+                
+                # Smart behavior: local file -> viewer, remote URL -> browser
+                if datasheet_local_file:
+                    # Have cached PDF - open in embedded viewer
+                    datasheet_btn.clicked.connect(lambda checked, path=datasheet_local_file: self.open_datasheet_url(path))
+                    datasheet_btn.setToolTip(f"Click to view cached datasheet:\n{os.path.basename(datasheet_local_file)}")
+                else:
+                    # No cached PDF - open URL in browser
+                    datasheet_btn.clicked.connect(lambda checked, url=datasheet_url: webbrowser.open(url))
+                    datasheet_btn.setToolTip(f"Click to open datasheet in browser:\n{datasheet_url}")
+                
                 table.setCellWidget(idx, 5, datasheet_btn)
             else:
                 # Regular text item for not found
@@ -1317,6 +1603,11 @@ class ICAuthenticatorGUI(QMainWindow):
         export_btn = QPushButton("📦 Export All Debug Data")
         export_btn.clicked.connect(self.export_all_batch_debug_data)
         button_layout.addWidget(export_btn)
+        
+        # Add Save All Datasheets button
+        save_pdfs_btn = QPushButton("📑 Save All Datasheets")
+        save_pdfs_btn.clicked.connect(self.save_all_datasheets)
+        button_layout.addWidget(save_pdfs_btn)
         
         button_layout.addStretch()
         
@@ -1623,6 +1914,90 @@ class ICAuthenticatorGUI(QMainWindow):
                 f"Failed to export batch data:\n{str(e)}\n\n{traceback.format_exc()}"
             )
     
+    def save_all_datasheets(self):
+        """Save all cached datasheets to a folder"""
+        try:
+            if not hasattr(self, 'batch_results') or not self.batch_results:
+                QMessageBox.warning(self, "No Results", "No batch results available")
+                return
+            
+            # Ask user for save location
+            save_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Select Folder to Save Datasheets",
+                os.path.expanduser("~/Desktop"),
+                QFileDialog.ShowDirsOnly
+            )
+            
+            if not save_dir:
+                return
+            
+            # Create datasheets subfolder
+            datasheets_dir = os.path.join(save_dir, "datasheets")
+            os.makedirs(datasheets_dir, exist_ok=True)
+            
+            # Copy all PDFs from cache
+            cache_dir = os.path.join(os.path.dirname(__file__), 'datasheet_cache')
+            copied_count = 0
+            not_found_count = 0
+            
+            for result in self.batch_results:
+                # Use local_file or fall back to datasheet_url for cached PDFs
+                local_file = result.get('datasheet_local_file') or result.get('datasheet_url', '')
+                part_number = result.get('normalized_part_number') or result.get('part_number', 'unknown')
+                
+                if local_file and local_file.startswith('file://'):
+                    # Extract path from URL
+                    if local_file.startswith('file:///'):
+                        local_path = local_file.replace('file:///', '', 1)
+                    else:
+                        local_path = local_file.replace('file://', '', 1)
+                    
+                    # Decode URL encoding
+                    local_path = urllib.parse.unquote(local_path)
+                    local_path = os.path.normpath(local_path)
+                    
+                    if os.path.exists(local_path):
+                        # Copy to destination
+                        dest_path = os.path.join(datasheets_dir, f"{part_number}.pdf")
+                        import shutil
+                        shutil.copy2(local_path, dest_path)
+                        copied_count += 1
+                    else:
+                        not_found_count += 1
+            
+            # Show success message
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Datasheets Saved")
+            msg.setText(f"Successfully saved {copied_count} datasheets!")
+            
+            if not_found_count > 0:
+                msg.setInformativeText(f"{not_found_count} datasheets were not found in cache")
+            
+            msg.setDetailedText(f"Saved to:\n{datasheets_dir}")
+            
+            # Add button to open folder
+            open_btn = msg.addButton("📁 Open Folder", QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Ok)
+            
+            msg.exec_()
+            
+            if msg.clickedButton() == open_btn:
+                try:
+                    os.startfile(datasheets_dir)
+                except:
+                    import subprocess
+                    subprocess.Popen(['explorer', datasheets_dir])
+        
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(
+                self,
+                "Save Error",
+                f"Failed to save datasheets:\n{str(e)}\n\n{traceback.format_exc()}"
+            )
+    
     def view_batch_result(self, url_str):
         """View individual result from batch processing"""
         if not url_str.startswith('view_result:'):
@@ -1665,14 +2040,16 @@ class ICAuthenticatorGUI(QMainWindow):
                 summary_text = self.create_summary_html(result)
                 summary_browser = QTextBrowser()
                 summary_browser.setHtml(summary_text)
-                summary_browser.setOpenExternalLinks(True)
+                summary_browser.setOpenExternalLinks(False)  # Handle links manually
+                summary_browser.anchorClicked.connect(self.on_datasheet_link_clicked)  # Custom handler
                 tabs.addTab(summary_browser, "📋 Summary")
                 
                 # Details tab
                 details_text = self.create_details_html(result)
                 details_browser = QTextBrowser()
                 details_browser.setHtml(details_text)
-                details_browser.setOpenExternalLinks(True)
+                details_browser.setOpenExternalLinks(False)  # Handle links manually
+                details_browser.anchorClicked.connect(self.on_datasheet_link_clicked)  # Custom handler
                 tabs.addTab(details_browser, "📊 Details")
                 
                 # Debug Images tab
@@ -1688,10 +2065,37 @@ class ICAuthenticatorGUI(QMainWindow):
                 
                 layout.addWidget(tabs)
                 
+                # Button row with View PDF and Close buttons  
+                button_layout = QHBoxLayout()
+                
+                # Add View PDF button if local datasheet exists
+                local_file = result.get('datasheet_local_file') or result.get('datasheet_url')
+                if local_file and local_file.startswith('file://'):
+                    view_pdf_btn = QPushButton("📄 View PDF Datasheet")
+                    view_pdf_btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #4A9EFF;
+                            color: white;
+                            padding: 8px 16px;
+                            border: none;
+                            border-radius: 4px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background-color: #357ABD;
+                        }
+                    """)
+                    view_pdf_btn.clicked.connect(lambda: self.open_datasheet_url(local_file))
+                    button_layout.addWidget(view_pdf_btn)
+                
+                button_layout.addStretch()
+                
                 # Close button
                 close_btn = QPushButton("Close")
                 close_btn.clicked.connect(dialog.accept)
-                layout.addWidget(close_btn)
+                button_layout.addWidget(close_btn)
+                
+                layout.addLayout(button_layout)
                 
                 dialog.exec_()
                 
@@ -1832,10 +2236,37 @@ class ICAuthenticatorGUI(QMainWindow):
                 
                 layout.addWidget(tabs)
                 
+                # Button row with View PDF and Close buttons
+                button_layout = QHBoxLayout()
+                
+                # Add View PDF button if local datasheet exists
+                local_file = result.get('datasheet_local_file') or result.get('datasheet_url')
+                if local_file and local_file.startswith('file://'):
+                    view_pdf_btn = QPushButton("📄 View PDF Datasheet")
+                    view_pdf_btn.setStyleSheet("""
+                        QPushButton {
+                            background-color: #4A9EFF;
+                            color: white;
+                            padding: 8px 16px;
+                            border: none;
+                            border-radius: 4px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background-color: #357ABD;
+                        }
+                    """)
+                    view_pdf_btn.clicked.connect(lambda: self.open_datasheet_url(local_file))
+                    button_layout.addWidget(view_pdf_btn)
+                
+                button_layout.addStretch()
+                
                 # Close button
                 close_btn = QPushButton("Close")
                 close_btn.clicked.connect(dialog.accept)
-                layout.addWidget(close_btn)
+                button_layout.addWidget(close_btn)
+                
+                layout.addLayout(button_layout)
                 
                 dialog.exec_()
                 
@@ -2153,12 +2584,33 @@ class ICAuthenticatorGUI(QMainWindow):
                     return obj.tolist()
                 return super().default(obj)
         
-        # Filter out non-serializable items
-        filtered = {
-            k: v for k, v in result.items()
-            if k not in ['debug_variants', 'debug_ocr_image', 'preprocessed_image', 
-                        'original_image', 'marking_validation', 'datasheet_details']
-        }
+        # Filter out non-serializable items and binary data
+        filtered = {}
+        for k, v in result.items():
+            # Skip image data, validation details, and binary content
+            if k in ['debug_variants', 'debug_ocr_image', 'preprocessed_image', 
+                    'original_image', 'marking_validation', 'datasheet_details']:
+                continue
+            
+            # Check for PDF bytes or large binary strings
+            if isinstance(v, (bytes, bytearray)):
+                filtered[k] = f"<Binary data: {len(v)} bytes>"
+                continue
+            
+            # Check for string that looks like PDF content
+            if isinstance(v, str) and len(v) > 1000 and ('%PDF' in v or '\\x' in v[:100]):
+                filtered[k] = f"<Large data: {len(v)} characters (truncated)>"
+                continue
+            
+            filtered[k] = v
+        
+        # Add marking validation summary
+        if 'marking_validation' in result:
+            filtered['marking_validation_summary'] = {
+                'passed': result['marking_validation'].get('validation_passed', False),
+                'manufacturer': result['marking_validation'].get('manufacturer', 'Unknown'),
+                'issues_count': len(result['marking_validation'].get('issues', []))
+            }
         
         return json.dumps(filtered, indent=2, cls=NumpyEncoder)
         
@@ -2524,139 +2976,98 @@ class ICAuthenticatorGUI(QMainWindow):
         self.ocr_text.clear()
         self.raw_text.clear()
         
-    def open_datasheet_url(self, url):
-        """Open datasheet URL - Use embedded PDF viewer if available, prioritize PDFs over site links"""
+    def view_pdf_datasheet(self):
+        """Open embedded PDF viewer for cached datasheet"""
+        if not hasattr(self, 'current_pdf_path') or not self.current_pdf_path:
+            QMessageBox.warning(self, "No PDF", "No PDF datasheet available to view")
+            return
+        
+        # Normalize path for Windows (convert forward slashes to backslashes)
+        pdf_path = os.path.normpath(self.current_pdf_path)
+            
+        if not os.path.exists(pdf_path):
+            QMessageBox.warning(self, "PDF Not Found", f"PDF file not found:\n{pdf_path}")
+            return
+        
+        if not PDF_AVAILABLE:
+            QMessageBox.warning(
+                self, 
+                "PDF Viewer Unavailable", 
+                "PyMuPDF is not installed.\n\nInstall with: pip install PyMuPDF"
+            )
+            return
+        
         try:
-            if url.lower().endswith('.pdf'):
-                # It's a PDF - try embedded viewer first, fallback to system viewer
-                if WEBENGINE_AVAILABLE:
-                    try:
-                        # Try embedded PDF viewer
-                        self._show_embedded_pdf(url)
-                        return
-                    except Exception as e:
-                        # Fall back to download + system viewer
-                        pass
-                
-                # Download PDF and open with system viewer
-                msg = QMessageBox()
-                msg.setIcon(QMessageBox.Information)
-                msg.setWindowTitle("Opening PDF Datasheet")
-                msg.setText("Downloading PDF datasheet...")
-                msg.setStandardButtons(QMessageBox.NoButton)
-                msg.show()
-                QApplication.processEvents()
-                
-                try:
-                    # Download PDF to temp location
-                    temp_dir = tempfile.gettempdir()
-                    pdf_filename = os.path.basename(url).split('?')[0]  # Remove query params
-                    if not pdf_filename.endswith('.pdf'):
-                        pdf_filename = 'datasheet.pdf'
-                    local_pdf_path = os.path.join(temp_dir, pdf_filename)
-                    
-                    # Download with timeout
-                    import socket
-                    socket.setdefaulttimeout(10)
-                    urllib.request.urlretrieve(url, local_pdf_path)
-                    
-                    msg.close()
-                    
-                    # Open PDF with default system viewer (Adobe, Foxit, etc.)
-                    if sys.platform == 'win32':
-                        os.startfile(local_pdf_path)
-                    elif sys.platform == 'darwin':  # macOS
-                        os.system(f'open "{local_pdf_path}"')
-                    else:  # Linux
-                        os.system(f'xdg-open "{local_pdf_path}"')
-                    
-                except Exception as e:
-                    msg.close()
-                    # Fallback to opening in browser
-                    QMessageBox.warning(self, "Download Failed", 
-                                       f"Could not download PDF locally.\nOpening in browser instead.\n\nError: {str(e)}")
-                    webbrowser.open(url)
-            else:
-                # Regular webpage - open in browser
+            # Open PDF viewer dialog
+            viewer = PDFViewerDialog(pdf_path, self)
+            viewer.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open PDF viewer:\n{str(e)}")
+    
+    def on_datasheet_link_clicked(self, url):
+        """Handle datasheet link clicks - cached PDFs in viewer, URLs in browser"""
+        url_str = url.toString() if hasattr(url, 'toString') else str(url)
+        
+        # Check if it's a LOCAL cached PDF (file://) - only these go to embedded viewer
+        if url_str.startswith('file://'):
+            # Local cached PDF - open in embedded viewer
+            self.open_datasheet_url(url_str)
+        else:
+            # Remote URL (including PDF URLs) - open in browser
+            # User can download and view separately
+            import webbrowser
+            webbrowser.open(url_str)
+        
+        # CRITICAL: Return True to prevent QTextBrowser from navigating away
+        # This keeps the summary page visible after clicking links
+        return True
+    
+    def open_datasheet_url(self, url):
+        """Open local cached PDF in embedded viewer (file:// URLs only)"""
+        try:
+            # Should only be called with file:// URLs
+            if not url.startswith('file://'):
+                # Remote URL - open in browser instead
                 webbrowser.open(url)
+                return
+            
+            # Local cached PDF - open with embedded viewer
+            # Handle both file:// and file:/// formats
+            if url.startswith('file:///'):
+                local_path = url.replace('file:///', '', 1)
+            else:
+                local_path = url.replace('file://', '', 1)
+            
+            # Decode URL encoding (e.g., %20 -> space)
+            local_path = urllib.parse.unquote(local_path)
+            
+            # Normalize path for Windows (convert forward slashes to backslashes)
+            local_path = os.path.normpath(local_path)
+            
+            # Check if file exists
+            if not os.path.exists(local_path):
+                QMessageBox.warning(
+                    self,
+                    "PDF Not Found",
+                    f"Cached PDF file not found:\n{local_path}"
+                )
+                return
+            
+            # Open with embedded PDF viewer
+            if PDF_AVAILABLE:
+                viewer = PDFViewerDialog(local_path, self)
+                viewer.exec_()
+            else:
+                # Fallback to system viewer
+                if sys.platform == 'win32':
+                    os.startfile(local_path)
+                elif sys.platform == 'darwin':  # macOS
+                    os.system(f'open "{local_path}"')
+                else:  # Linux
+                    os.system(f'xdg-open "{local_path}"')
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open datasheet:\n{str(e)}")
     
-    def _show_embedded_pdf(self, url):
-        """Show PDF in embedded viewer dialog"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Datasheet Viewer")
-        dialog.setMinimumSize(1200, 900)
-        
-        layout = QVBoxLayout(dialog)
-        
-        # Info label
-        info_label = QLabel(f"📄 Loading: {os.path.basename(url)}")
-        info_label.setStyleSheet("font-weight: bold; padding: 10px; background: #2a2a2a;")
-        layout.addWidget(info_label)
-        
-        # Web view for PDF
-        web_view = QWebEngineView()
-        web_view.setUrl(QUrl(url))
-        layout.addWidget(web_view)
-        
-        # Button row
-        button_layout = QHBoxLayout()
-        
-        # Open in system viewer button
-        system_btn = QPushButton("📂 Open in System Viewer")
-        system_btn.clicked.connect(lambda: self._download_and_open_pdf(url))
-        button_layout.addWidget(system_btn)
-        
-        # Open in browser button
-        browser_btn = QPushButton("🌐 Open in Browser")
-        browser_btn.clicked.connect(lambda: webbrowser.open(url))
-        button_layout.addWidget(browser_btn)
-        
-        button_layout.addStretch()
-        
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.accept)
-        button_layout.addWidget(close_btn)
-        
-        layout.addLayout(button_layout)
-        
-        dialog.exec_()
-    
-    def _download_and_open_pdf(self, url):
-        """Download PDF and open with system viewer"""
-        try:
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Information)
-            msg.setWindowTitle("Downloading PDF")
-            msg.setText("Downloading...")
-            msg.setStandardButtons(QMessageBox.NoButton)
-            msg.show()
-            QApplication.processEvents()
-            
-            temp_dir = tempfile.gettempdir()
-            pdf_filename = os.path.basename(url).split('?')[0]
-            if not pdf_filename.endswith('.pdf'):
-                pdf_filename = 'datasheet.pdf'
-            local_pdf_path = os.path.join(temp_dir, pdf_filename)
-            
-            import socket
-            socket.setdefaulttimeout(10)
-            urllib.request.urlretrieve(url, local_pdf_path)
-            
-            msg.close()
-            
-            if sys.platform == 'win32':
-                os.startfile(local_pdf_path)
-            elif sys.platform == 'darwin':
-                os.system(f'open "{local_pdf_path}"')
-            else:
-                os.system(f'xdg-open "{local_pdf_path}"')
-                
-        except Exception as e:
-            msg.close()
-            QMessageBox.critical(self, "Error", f"Failed to download PDF:\n{str(e)}")
     
     def toggle_theme(self):
         """Toggle between dark and light mode"""
@@ -2922,9 +3333,9 @@ def main():
         try:
             myappid = 'Ross0907.ICAuthenticator.ProductionGUI.v3.0'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-            print(f"✓ App User Model ID set: {myappid}")
+            safe_print(f"OK: App User Model ID set: {myappid}")
         except Exception as e:
-            print(f"✗ Could not set App User Model ID: {e}")
+            safe_print(f"Error: Could not set App User Model ID: {e}")
     
     app = QApplication(sys.argv)
     app.setApplicationName("IC Authentication System")
@@ -2950,16 +3361,16 @@ def main():
                     # Also set as default for all widgets
                     QApplication.setWindowIcon(app_icon)
                     
-                    print(f"✓ Application icon set from: {icon_path}")
-                    print(f"  Icon size: {app_icon.availableSizes()}")
+                    safe_print(f"OK: Application icon set from: {icon_path}")
+                    safe_print(f"  Icon size: {app_icon.availableSizes()}")
                     break
             except Exception as e:
-                print(f"✗ Failed to load icon from {icon_path}: {e}")
+                safe_print(f"Error: Failed to load icon from {icon_path}: {e}")
     
     if not app_icon or app_icon.isNull():
-        print(f"✗ Could not set application icon - tried paths:")
+        safe_print(f"Error: Could not set application icon - tried paths:")
         for p in icon_paths:
-            print(f"  - {p} (exists: {os.path.exists(p)})")
+            safe_print(f"  - {p} (exists: {os.path.exists(p)})")
     
     gui = ICAuthenticatorGUI()
     # Pass the icon reference to the GUI

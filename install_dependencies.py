@@ -164,10 +164,17 @@ def main():
     ):
         failed_packages.append("web scraping tools")
     
-    # Step 10: YOLO/ultralytics NOT USED - SKIPPED
+    # Step 10: Install PDF tools (PyMuPDF for embedded viewer, PyPDF2 for parsing)
+    if not run_pip_command(
+        [python_exe, "-m", "pip", "install", "PyMuPDF>=1.23.0", "PyPDF2>=3.0.0"],
+        "PDF Tools (PyMuPDF, PyPDF2)"
+    ):
+        failed_packages.append("PDF tools")
+    
+    # Step 11: YOLO/ultralytics NOT USED - SKIPPED
     print("\n⏭️  Skipping ultralytics/YOLO (not required by application)")
     
-    # Step 11: Levenshtein/rapidfuzz NOT USED - SKIPPED
+    # Step 12: Levenshtein/rapidfuzz NOT USED - SKIPPED
     print("⏭️  Skipping Levenshtein/rapidfuzz (not required by application)")
     
     # Summary
