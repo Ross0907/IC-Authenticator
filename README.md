@@ -389,7 +389,7 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 
 ### Raw Data Tab
 
-![Raw Data](README_imgs/image-1759913790337.png)
+![Raw Data](README_imgs/image-1760146387684.png)
 
 **Purpose**: Provides complete JSON output for developers and advanced users
 
@@ -410,7 +410,7 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 
 ### Summary Tab - Authentication Results
 
-![Summary Tab](README_imgs/image-1760146370334.png)
+![Summary Tab](README_imgs/image-1760146520936.png)
 
 **Purpose**: Displays the final authentication verdict with comprehensive scoring
 
@@ -434,7 +434,7 @@ The system uses a 100-point scale with penalties for issues:
 
 ### Detailed Analysis Tab
 
-![Detailed Analysis](README_imgs/image-1759913824463.png)
+![Detailed Analysis](README_imgs/image-1760146396007.png)
 
 **Purpose**: Shows in-depth validation and verification details
 
@@ -468,7 +468,7 @@ The system uses a 100-point scale with penalties for issues:
 
 ### Debug Images Tab - Text Detection Visualization
 
-![Debug Images](README_imgs/image-1760146489439.png)
+![Debug Images](README_imgs/image-1760146532332.png)
 
 **Purpose**: Visualizes the OCR text detection process with bounding boxes
 
@@ -495,7 +495,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Image Preprocessing Variants
 
-![Preprocessing Variants](README_imgs/image-1760146532332.png)
+![Preprocessing Variants](README_imgs/image-1760146489439.png)
 
 **Purpose**: Shows the different image enhancement methods used for robust text extraction
 
@@ -560,7 +560,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Batch Result Details - Individual IC
 
-![Individual Batch Result - Summary](README_imgs/image-1759914019627.png)
+![Individual Batch Result - Summary](README_imgs/image-1760146370334.png)
 
 **Purpose**: Detailed view of a single IC from batch processing
 
@@ -588,7 +588,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Detailed OCR Analysis
 
-![OCR Details](README_imgs/image-1759914073205.png)
+![OCR Details](README_imgs/image-1760146329471.png)
 
 **Purpose**: Shows exactly how the OCR system extracted and interpreted text
 
@@ -610,7 +610,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Debug Preprocessing Visualization
 
-![Debug Preprocessing](README_imgs/image-1759914192423.png)
+![Debug Preprocessing](README_imgs/image-1760146570499.png)
 
 **Purpose**: See the actual preprocessing results that fed into the OCR engine
 
