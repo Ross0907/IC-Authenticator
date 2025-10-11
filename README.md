@@ -988,7 +988,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Image Preprocessing Variants
 
-![Preprocessing Variants](README_imgs/image-1759913954628.png)
+![Preprocessing Variants](README_imgs/image-1759914011136.png)
 
 **Purpose**: Shows the 7 different image enhancement methods used for robust text extraction
 
@@ -1017,7 +1017,7 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Batch Processing Results
 
-![Batch Processing](README_imgs/image-1759914011136.png)
+![Batch Processing](README_imgs/image-1759913954628.png)
 
 **Purpose**: Process multiple IC images simultaneously and view aggregate results
 
