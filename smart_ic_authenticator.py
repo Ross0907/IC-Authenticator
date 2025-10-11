@@ -284,6 +284,9 @@ class SmartICAuthenticator:
                 'suspicion_score': counterfeit_check['suspicion_score'],
                 'confidence': confidence,
                 'verdict': verdict,
+                'counterfeit_reasons': self._generate_counterfeit_explanation(
+                    verdict, counterfeit_check, part_info, datasheet, marking_valid
+                ),
                 'is_authentic': confidence >= 65,
                 'full_text': ocr_results['full_text'],
                 'ocr_details': ocr_results.get('details', []),
@@ -1142,6 +1145,102 @@ class SmartICAuthenticator:
         # Default: if we have reasonable text, assume valid (lenient approach)
         logger.info("  ✓ Marking validation passed (lenient)")
         return len(text) > 10
+    
+    def _generate_counterfeit_explanation(self, verdict: str, counterfeit_check: Dict, 
+                                          part_info: Dict, datasheet: Dict, marking_valid: bool) -> List[str]:
+        """Generate human-readable explanation of why a chip is considered counterfeit"""
+        reasons = []
+        
+        # Add verdict-specific explanations
+        if verdict == "LIKELY COUNTERFEIT" or verdict == "SUSPICIOUS":
+            # Marking diagram comparison - USE ACTUAL MARKING INFO FROM DATASHEET
+            if datasheet.get('found') and datasheet.get('marking_info'):
+                if not marking_valid:
+                    reasons.append("❌ Chip marking does NOT match datasheet marking diagrams")
+                    reasons.append("   Expected marking format not found on chip surface")
+                    
+                    # Show what we expected from datasheet
+                    marking_sections = datasheet['marking_info'].get('sections', [])
+                    if marking_sections:
+                        reasons.append("   Datasheet specifies:")
+                        # Extract key marking requirements (first section, limited)
+                        first_section = marking_sections[0][:300] if marking_sections else ""
+                        if "YYWW" in first_section or "date code" in first_section.lower():
+                            reasons.append("   • Date code in YYWW or WWYY format required")
+                        if "lot" in first_section.lower() or "trace" in first_section.lower():
+                            reasons.append("   • Lot/trace code required")
+                else:
+                    # Marking is valid but other issues exist
+                    reasons.append("⚠️  Marking format appears valid but other concerns exist")
+            elif not datasheet.get('found'):
+                reasons.append("⚠️  No official datasheet found - cannot verify marking format")
+            else:
+                # No marking info in datasheet
+                if not marking_valid:
+                    reasons.append("❌ Chip marking format appears suspicious")
+                    reasons.append("   Unable to extract marking specifications from datasheet")
+            
+            # Part number mismatch
+            if not part_info.get('part_number_matched'):
+                reasons.append("❌ Part number does NOT match datasheet")
+                reasons.append(f"   OCR read: {part_info.get('part_number', 'N/A')}")
+                reasons.append(f"   Expected from datasheet: Similar format not found")
+            
+            # Datasheet not found
+            if not datasheet.get('found'):
+                reasons.append("⚠️  No official datasheet found for this part number")
+                reasons.append("   Part number may be fake or incorrectly printed")
+            
+            # Add specific counterfeit flags
+            if counterfeit_check.get('flags'):
+                reasons.append("\n🚨 Counterfeit Indicators Detected:")
+                for flag in counterfeit_check['flags']:
+                    reasons.append(f"   • {flag}")
+            
+            # Suspicion score explanation
+            suspicion = counterfeit_check.get('suspicion_score', 0)
+            if suspicion > 60:
+                reasons.append(f"\n⚠️  High suspicion score: {suspicion}% (threshold: 50%)")
+            elif suspicion > 40:
+                reasons.append(f"\n⚠️  Elevated suspicion score: {suspicion}%")
+        
+        elif verdict == "AUTHENTIC" or verdict == "LIKELY AUTHENTIC":
+            # Show positive validation
+            if datasheet.get('found') and marking_valid:
+                reasons.append("✅ Chip marking matches datasheet marking diagrams")
+                
+                # Show what matched from datasheet
+                marking_sections = datasheet.get('marking_info', {}).get('sections', [])
+                if marking_sections:
+                    first_section = marking_sections[0][:300] if marking_sections else ""
+                    if "YYWW" in first_section or "date code" in first_section.lower():
+                        reasons.append("   • Date code format validated against datasheet")
+                    if "lot" in first_section.lower() or "trace" in first_section.lower():
+                        reasons.append("   • Lot/trace code format validated")
+            
+            reasons.append("✅ Part number verified against official datasheet")
+            
+            if datasheet.get('found'):
+                reasons.append(f"✅ Official datasheet found and validated")
+                if datasheet.get('url'):
+                    # Show source for transparency
+                    url = datasheet['url']
+                    if 'infineon.com' in url:
+                        reasons.append("   Source: Infineon (official manufacturer)")
+                    elif 'ti.com' in url:
+                        reasons.append("   Source: Texas Instruments (official manufacturer)")
+                    elif 'microchip.com' in url:
+                        reasons.append("   Source: Microchip (official manufacturer)")
+                    elif 'nxp.com' in url:
+                        reasons.append("   Source: NXP Semiconductors (official manufacturer)")
+        
+        # If no specific reasons, provide general verdict explanation
+        if not reasons:
+            if verdict == "SUSPICIOUS":
+                reasons.append("⚠️  Some inconsistencies detected but not conclusive")
+                reasons.append("   Manual inspection recommended")
+        
+        return reasons
     
     def _check_for_counterfeits(self, ocr_results: Dict, part_number: str, manufacturer: str, 
                                 datasheet_found: bool = False, marking_info: Dict = None) -> Dict:

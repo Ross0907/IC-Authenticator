@@ -2,7 +2,7 @@
 ; Professional Windows Installer with Python Environment & Dependencies
 
 #define MyAppName "IC Authenticator"
-#define MyAppVersion "7.0.15"
+#define MyAppVersion "7.0.17"
 #define MyAppPublisher "IC Detection"
 #define MyAppURL "https://github.com/Ross0907/Ic_detection"
 #define MyAppExeName "ICAuthenticator.exe"

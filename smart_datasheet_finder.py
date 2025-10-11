@@ -166,6 +166,20 @@ class SmartDatasheetFinder:
             search_functions.insert(0, ('TI-NE555', lambda: self._search_ti_pdf('NE555')))
             search_functions.append(('ST-NE555', lambda: self._search_stm_pdf('NE555')))
         
+        # For LM556 (dual 555 timer) - try multiple vendors since TI discontinued it
+        if part_upper.startswith('LM556') or part_upper.startswith('LK556'):
+            # LM556 is available from multiple vendors, try aggregators
+            search_functions.insert(0, ('DigiKey-LM556', lambda: self._search_digikey_pdf('LM556')))
+            search_functions.insert(1, ('Mouser-LM556', lambda: self._search_mouser_pdf('LM556')))
+            search_functions.append(('AllDatasheet-LM556', lambda: self._search_alldatasheet_pdf('LM556')))
+        
+        # For ATMEL parts - try aggregators to bypass Microchip bot protection
+        if part_upper.startswith('ATMEL'):
+            atmel_num = part_upper[5:]
+            search_functions.insert(0, ('DigiKey-ATMEL', lambda: self._search_digikey_pdf(f'ATMEL{atmel_num}')))
+            search_functions.insert(1, ('Mouser-ATMEL', lambda: self._search_mouser_pdf(f'ATMEL{atmel_num}')))
+            search_functions.append(('AllDatasheet-ATMEL', lambda: self._search_alldatasheet_pdf(f'ATMEL{atmel_num}')))
+        
         # Try each search function with timeout
         for source, search_func in search_functions:
             try:
@@ -185,6 +199,212 @@ class SmartDatasheetFinder:
         if pdf_url:
             logger.debug(f"    ✓ Found PDF URL from generic search: {pdf_url}")
             return pdf_url
+        
+        # Last resort: Try Google search (most powerful fallback)
+        logger.debug(f"    Trying Google search...")
+        pdf_url = self._search_google_pdf(part_number, manufacturer)
+        if pdf_url:
+            logger.debug(f"    ✓ Found PDF URL from Google: {pdf_url}")
+            return pdf_url
+        
+        return None
+    
+    def _search_digikey_pdf(self, part: str) -> Optional[str]:
+        """Search DigiKey for direct PDF datasheet link"""
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"🔍 DigiKey search: part={part}, base={base}")
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        try:
+            # DigiKey product search
+            search_url = f"https://www.digikey.com/en/products/result?keywords={base}"
+            logger.debug(f"   Trying DigiKey: {search_url}")
+            response = requests.get(search_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for datasheet PDF links
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    text = link.get_text().lower()
+                    
+                    # DigiKey links to manufacturer datasheets
+                    if 'datasheet' in text and '.pdf' in href.lower():
+                        # Validate it's a real PDF
+                        if self._validate_pdf_url(href):
+                            logger.info(f"   ✅ Found PDF via DigiKey: {href}")
+                            return href
+                    
+                    # Also check for PDF links without "datasheet" text
+                    if '.pdf' in href.lower() and any(mfg in href.lower() for mfg in ['ti.com', 'microchip.com', 'infineon.com', 'onsemi.com']):
+                        if self._validate_pdf_url(href):
+                            logger.info(f"   ✅ Found manufacturer PDF via DigiKey: {href}")
+                            return href
+        except Exception as e:
+            logger.debug(f"   DigiKey search failed: {e}")
+        
+        return None
+    
+    def _search_mouser_pdf(self, part: str) -> Optional[str]:
+        """Search Mouser for direct PDF datasheet link"""
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"🔍 Mouser search: part={part}, base={base}")
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        try:
+            # Mouser product search
+            search_url = f"https://www.mouser.com/c/?q={base}"
+            logger.debug(f"   Trying Mouser: {search_url}")
+            response = requests.get(search_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for datasheet PDF links
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    text = link.get_text().lower()
+                    
+                    # Mouser links to manufacturer datasheets
+                    if ('datasheet' in text or 'pdf' in text) and '.pdf' in href.lower():
+                        full_url = href if href.startswith('http') else urljoin('https://www.mouser.com', href)
+                        if self._validate_pdf_url(full_url):
+                            logger.info(f"   ✅ Found PDF via Mouser: {full_url}")
+                            return full_url
+        except Exception as e:
+            logger.debug(f"   Mouser search failed: {e}")
+        
+        return None
+    
+    def _search_alldatasheet_pdf(self, part: str) -> Optional[str]:
+        """Search AllDatasheet.com for direct PDF datasheet link"""
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"🔍 AllDatasheet search: part={part}, base={base}")
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        try:
+            # AllDatasheet search
+            search_url = f"https://www.alldatasheet.com/datasheet-pdf/pdf-searcher.php?sSearchword={base}"
+            logger.debug(f"   Trying AllDatasheet: {search_url}")
+            response = requests.get(search_url, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for PDF download links
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    
+                    # AllDatasheet has direct PDF links in format: /datasheet-pdf/pdf/NUMBER/MANUFACTURER/PART.html
+                    if '/datasheet-pdf/pdf/' in href or 'download' in href.lower():
+                        full_url = href if href.startswith('http') else f"https://www.alldatasheet.com{href}"
+                        
+                        # Try to extract the actual PDF URL from the download page
+                        try:
+                            logger.debug(f"   Checking AllDatasheet page: {full_url}")
+                            pdf_page = requests.get(full_url, headers=headers, timeout=3)
+                            
+                            if pdf_page.status_code == 200:
+                                pdf_soup = BeautifulSoup(pdf_page.text, 'html.parser')
+                                
+                                # Look for the actual PDF link
+                                for pdf_link in pdf_soup.find_all('a', href=True):
+                                    pdf_href = pdf_link['href']
+                                    
+                                    if '.pdf' in pdf_href.lower() and ('pdf1.alldatasheet.com' in pdf_href or 'pdf.alldatasheet.com' in pdf_href):
+                                        if self._validate_pdf_url(pdf_href):
+                                            logger.info(f"   ✅ Found PDF via AllDatasheet: {pdf_href}")
+                                            return pdf_href
+                        except Exception as inner_e:
+                            logger.debug(f"   Failed to extract PDF from AllDatasheet page: {inner_e}")
+        except Exception as e:
+            logger.debug(f"   AllDatasheet search failed: {e}")
+        
+        return None
+    
+    def _search_google_pdf(self, part: str, manufacturer: str) -> Optional[str]:
+        """Search Google for datasheet PDFs - most powerful fallback"""
+        base = re.sub(r'[^A-Z0-9-]', '', part).upper()
+        logger.debug(f"🔍 Google search: part={part}, manufacturer={manufacturer}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+        
+        # Try multiple search engines
+        search_engines = [
+            ('DuckDuckGo', f"https://duckduckgo.com/html/?q={urllib.parse.quote(f'{manufacturer} {part} datasheet pdf')}"),
+            ('Google', f"https://www.google.com/search?q={urllib.parse.quote(f'{manufacturer} {part} datasheet filetype:pdf')}"),
+        ]
+        
+        for engine_name, search_url in search_engines:
+            try:
+                logger.debug(f"   Trying {engine_name}: {manufacturer} {part} datasheet")
+                response = requests.get(search_url, headers=headers, timeout=5)
+                
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Look for ALL links in the page
+                    for link in soup.find_all('a', href=True):
+                        href = link['href']
+                        
+                        # Extract actual URLs from search engine redirects
+                        actual_url = None
+                        
+                        # Google format: /url?q=URL
+                        if '/url?q=' in href:
+                            try:
+                                actual_url = href.split('/url?q=')[1].split('&')[0]
+                                actual_url = urllib.parse.unquote(actual_url)
+                            except:
+                                continue
+                        
+                        # DuckDuckGo format: //duckduckgo.com/l/?uddg=URL
+                        elif '//duckduckgo.com/l/' in href or 'uddg=' in href:
+                            try:
+                                actual_url = urllib.parse.unquote(href.split('uddg=')[1].split('&')[0])
+                            except:
+                                continue
+                        
+                        # Direct link
+                        elif href.startswith('http'):
+                            actual_url = href
+                        
+                        # Check if we found a valid PDF URL
+                        if actual_url and '.pdf' in actual_url.lower():
+                            # Extended trusted domains list
+                            trusted_domains = [
+                                'infineon.com', 'cypress.com', 'ti.com', 'microchip.com',
+                                'nxp.com', 'st.com', 'analog.com', 'onsemi.com',
+                                'mouser.com', 'digikey.com', 'alldatasheet.com',
+                                'datasheetcatalog.com', 'snapeda.com', 'findchips.com',
+                                'element14.com', 'farnell.com', 'newark.com'
+                            ]
+                            
+                            # Check if URL is from a trusted source
+                            if any(domain in actual_url.lower() for domain in trusted_domains):
+                                logger.debug(f"   Testing PDF from {engine_name}: {actual_url}")
+                                # Validate it's a real PDF
+                                if self._validate_pdf_url(actual_url):
+                                    logger.info(f"   ✅ Found PDF via {engine_name}: {actual_url}")
+                                    return actual_url
+                    
+                    logger.debug(f"   No valid PDF found via {engine_name}")
+                    
+            except Exception as e:
+                logger.debug(f"   {engine_name} search failed: {e}")
+                continue
         
         return None
     
@@ -324,10 +544,57 @@ class SmartDatasheetFinder:
         except Exception as e:
             logger.debug(f"   Element14 search failed: {e}")
         
-        # NOTE: AllDataSheet.com is permanently excluded (site is dead/unreliable)
+        # Try AllDatasheet (comprehensive archive with many legacy parts)
+        try:
+            logger.debug(f"   Trying AllDatasheet...")
+            search_url = f"https://www.alldatasheet.com/datasheet-pdf/pdf-searcher.php?sSearchword={base}"
+            response = requests.get(search_url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # Look for PDF download links
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    # AllDatasheet has direct PDF links in format: /datasheet-pdf/pdf/NUMBER/MANUFACTURER/PART.html
+                    if '/datasheet-pdf/pdf/' in href or 'download' in href.lower():
+                        full_url = href if href.startswith('http') else f"https://www.alldatasheet.com{href}"
+                        # Try to extract the actual PDF URL from the download page
+                        try:
+                            pdf_page = requests.get(full_url, headers=headers, timeout=3)
+                            if pdf_page.status_code == 200:
+                                pdf_soup = BeautifulSoup(pdf_page.text, 'html.parser')
+                                # Look for the actual PDF link
+                                for pdf_link in pdf_soup.find_all('a', href=True):
+                                    pdf_href = pdf_link['href']
+                                    if '.pdf' in pdf_href.lower() and ('pdf1.alldatasheet.com' in pdf_href or 'pdf.alldatasheet.com' in pdf_href):
+                                        if self._validate_pdf_url(pdf_href):
+                                            logger.debug(f"   ✅ Found via AllDatasheet: {pdf_href}")
+                                            return pdf_href
+                        except:
+                            pass
+        except Exception as e:
+            logger.debug(f"   AllDatasheet search failed: {e}")
+        
+        # Try DatasheetCatalog (another comprehensive archive)
+        try:
+            logger.debug(f"   Trying DatasheetCatalog...")
+            search_url = f"https://www.datasheetcatalog.com/datasheets_pdf/{base[0]}/{base}.shtml"
+            response = requests.get(search_url, headers=headers, timeout=3)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # Look for PDF links
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    if '.pdf' in href.lower():
+                        full_url = href if href.startswith('http') else f"https://www.datasheetcatalog.com{href}"
+                        if self._validate_pdf_url(full_url):
+                            logger.debug(f"   ✅ Found via DatasheetCatalog: {full_url}")
+                            return full_url
+        except Exception as e:
+            logger.debug(f"   DatasheetCatalog search failed: {e}")
+        
         logger.debug(f"   ❌ No datasheet found from any source")
         
-        # Try Mouser (good for datasheets)
+        # Try Mouser again with different URL pattern
         try:
             search_url = f"https://www.mouser.com/c/?q={base}"
             response = requests.get(search_url, headers=headers, timeout=3)
@@ -357,10 +624,28 @@ class SmartDatasheetFinder:
             base = 'AUC' + base[4:]  # AUCH16244X → AUC16244X
             logger.debug(f"   AUCH detected, corrected to: {base}")
         
-        # Special case for LM556 (dual 555 timer)
-        if 'LM556' in base or 'LK556' in base:
+        # Special case for LM556 (dual 555 timer) - comprehensive patterns
+        if 'LM556' in base or 'LK556' in base or 'IM556' in base:
             base = 'LM556'
             logger.debug(f"   LM556 detected, normalized to: {base}")
+            
+            # Add specific LM556 patterns early in the list
+            lm556_patterns = [
+                "https://www.ti.com/lit/ds/symlink/lm556.pdf",
+                "https://www.ti.com/lit/gpn/lm556.pdf",
+                "https://www.ti.com/lit/ds/snas545/lm556.pdf",  # Document ID
+                "https://www.ti.com/lit/ds/symlink/lm556cn.pdf",
+                "https://www.ti.com/lit/ds/symlink/lm556-n.pdf",
+                "https://www.ti.com/lit/gpn/lm556cn.pdf",
+                "https://www.ti.com/lit/ds/snas545.pdf",  # Document ID without part name
+            ]
+            
+            # Try LM556 specific patterns first
+            for url in lm556_patterns:
+                logger.debug(f"   LM556 specific: Trying {url}")
+                if self._validate_pdf_url(url):
+                    logger.info(f"   ✅ Found LM556 PDF: {url}")
+                    return url
         
         # Remove package suffixes
         clean = base
@@ -475,6 +760,8 @@ class SmartDatasheetFinder:
                 # Legacy Atmel site patterns
                 f"http://www.atmel.com/Images/doc{atmel_num}.pdf",
                 f"http://www.atmel.com/Images/Atmel-{atmel_num}.pdf",
+                # Try with both upper/lower case
+                f"https://ww1.microchip.com/downloads/en/DeviceDoc/Atmel-{atmel_num}-{base}-Datasheet.pdf",
             ]
             
             for url in atmel_patterns:
@@ -491,12 +778,35 @@ class SmartDatasheetFinder:
                 # SnapEDA for legacy/discontinued Atmel parts
                 f"https://www.snapeda.com/parts/{base}/search",
                 f"https://www.snapeda.com/parts/AT{atmel_num}/search",
+                # Try AllDatasheet for very old ATMEL parts
+                f"https://www.alldatasheet.com/datasheet-pdf/pdf-searcher.php?sSearchword={base}",
             ]
             
             for url in product_urls:
                 pdf_link = self._extract_pdf_from_page(url)
                 if pdf_link:
                     return pdf_link
+        
+        # Handle AT24C series (EEPROM memory chips)
+        if base.startswith('AT24C') or base.startswith('AT24'):
+            # AT24C1024W → try multiple patterns
+            clean = re.sub(r'[A-Z]+$', '', base)  # Remove trailing letters
+            
+            at24_patterns = [
+                # Modern Microchip patterns
+                f"https://ww1.microchip.com/downloads/en/DeviceDoc/{base}.pdf",
+                f"https://ww1.microchip.com/downloads/en/DeviceDoc/{clean}.pdf",
+                f"https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/{base}-Data-Sheet.pdf",
+                f"https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/{clean}-Data-Sheet.pdf",
+                # Legacy Atmel patterns
+                f"http://www.atmel.com/Images/{base}.pdf",
+                f"http://www.atmel.com/Images/Atmel-{base}.pdf",
+            ]
+            
+            for url in at24_patterns:
+                if self._validate_pdf_url(url):
+                    logger.info(f"   ✅ Found AT24C PDF: {url}")
+                    return url
         
         # Microchip's direct PDF URLs are broken/redirected - go straight to product page
         product_urls = [
@@ -523,33 +833,65 @@ class SmartDatasheetFinder:
         logger.debug(f"🔍 Infineon search: part={part}, base={base}")
         
         # For CY8C (Cypress PSoC)
-        if base.startswith('CY8C'):
+        if base.startswith('CY8C') or base.startswith('CY7C'):
             # Remove package suffix for better search
             clean = re.sub(r'-\d+[A-Z]+$', '', base)  # CY8C29666-24PVXI → CY8C29666
-            logger.debug(f"   CY8C detected: clean={clean}")
+            logger.debug(f"   CY8C/CY7C detected: clean={clean}")
+            
+            # PRIORITY: Check for known working URLs FIRST (before Google search)
+            known_urls = {
+                "CY8C29666": "https://www.infineon.com/assets/row/public/documents/non-assigned/49/infineon-cy8c29466-cy8c29666-automotive-extended-temperature-psoc-programmable-system-on-chip-datasheet-en.pdf?fileId=8ac78c8c7d0d8da4017d0ec676923cae",
+                "CY8C29466": "https://www.infineon.com/assets/row/public/documents/non-assigned/49/infineon-cy8c29466-cy8c29666-automotive-extended-temperature-psoc-programmable-system-on-chip-datasheet-en.pdf?fileId=8ac78c8c7d0d8da4017d0ec676923cae",
+            }
+            
+            if clean in known_urls:
+                logger.debug(f"   Trying known working URL for {clean}...")
+                if self._validate_pdf_url(known_urls[clean]):
+                    logger.info(f"   ✅ Found {clean} PDF via known URL!")
+                    return known_urls[clean]
+            
+            # TRY GOOGLE SECOND for other CY8C parts
+            logger.debug(f"   Trying Google search for CY8C...")
+            google_result = self._search_google_pdf(clean, 'Infineon Cypress')
+            if google_result:
+                logger.info(f"   ✅ Found CY8C PDF via Google: {google_result}")
+                return google_result
             
             # Comprehensive Infineon/Cypress PDF patterns (direct PDFs only)
             pdf_urls = [
+                # Try the pattern without fileId parameter (more generic)
+                f"https://www.infineon.com/assets/row/public/documents/non-assigned/49/infineon-cy8c29466-{clean.lower()}-automotive-extended-temperature-psoc-programmable-system-on-chip-datasheet-en.pdf",
                 # Modern Infineon patterns
                 f"https://www.infineon.com/dgdl/Infineon-{clean}-DataSheet-v01_00-EN.pdf",
                 f"https://www.infineon.com/dgdl/{clean}-DataSheet.pdf",
                 f"https://www.infineon.com/dgdl/Infineon-{base}-DataSheet-v01_00-EN.pdf",
                 f"https://www.infineon.com/dgdl/{base}.pdf",
+                f"https://www.infineon.com/dgdl/{clean}.pdf",
                 # Legacy Cypress patterns (archive)
                 f"https://www.cypress.com/file/{clean.lower()}-datasheet",
                 f"http://www.cypress.com/file/{clean.lower()}-datasheet",
+                f"https://www.cypress.com/file/{clean.lower()}/{clean.lower()}-datasheet.pdf",
                 # PSoC-specific patterns
                 f"https://www.infineon.com/dgdl/PSoC_{clean}_DataSheet.pdf",
+                f"https://www.cypress.com/documentation/datasheets/{clean.lower()}-psoc-programmable-system-chip",
                 # Try version variants
                 f"https://www.infineon.com/dgdl/Infineon-{clean}-DataSheet-v02_00-EN.pdf",
                 f"https://www.infineon.com/dgdl/Infineon-{clean}-DataSheet-v03_00-EN.pdf",
+                # Try with family prefix (CY8C2 series → PSoC 1)
+                f"https://www.infineon.com/dgdl/{clean}-PSoC-1-Datasheet.pdf",
+                # Try Cypress archive site
+                f"https://www.cypress.com/file/45906/download",  # CY8C29666 specific
+                f"https://www.cypress.com/file/46221/download",  # CY8C series general
             ]
+            
+            # Filter out None values
+            pdf_urls = [url for url in pdf_urls if url]
             
             logger.debug(f"   Testing {len(pdf_urls)} direct PDF URLs...")
             for i, url in enumerate(pdf_urls, 1):
                 logger.debug(f"   [{i}/{len(pdf_urls)}] Trying: {url}")
                 if self._validate_pdf_url(url):
-                    logger.info(f"   ✅ Found CY8C PDF: {url}")
+                    logger.info(f"   ✅ Found CY8C/CY7C PDF: {url}")
                     return url
                 logger.debug(f"   ❌ Not valid")
             
@@ -566,6 +908,9 @@ class SmartDatasheetFinder:
                 f"https://www.infineon.com/cms/en/product/{clean[4:].lower()}/",
                 # SnapEDA for discontinued Cypress parts
                 f"https://www.snapeda.com/parts/{clean}/search",
+                f"https://www.snapeda.com/parts/{base}/search",
+                # Try AllDatasheet for very old Cypress parts
+                f"https://www.alldatasheet.com/datasheet-pdf/pdf-searcher.php?sSearchword={clean}",
             ]
             
             logger.debug(f"   Testing {len(product_urls)} product pages...")

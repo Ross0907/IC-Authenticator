@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QMessageBox, QProgressBar, QGridLayout, QSplitter,
                              QCheckBox, QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
                              QSpinBox, QToolBar)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QUrl
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QEvent, QUrl, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QTextCursor, QIcon
 
 # Import PDF rendering library
@@ -67,31 +67,78 @@ class ProcessingThread(QThread):
         self.authenticator = authenticator
     
     def run(self):
-        """Run the authentication process"""
+        """Run the authentication process with aggressive memory management"""
+        import gc
+        
         try:
             self.status.emit("🚀 Starting analysis...")
             self.progress.emit(10)
+            QApplication.processEvents()
             
             self.status.emit("📝 Extracting text...")
             self.progress.emit(40)
+            QApplication.processEvents()
             
             self.status.emit("🔍 Detecting part numbers...")
             self.progress.emit(60)
+            QApplication.processEvents()
             
-            self.status.emit("� Validating datasheets...")
+            self.status.emit("📄 Validating datasheets...")
             self.progress.emit(80)
+            QApplication.processEvents()
             
             self.status.emit("✅ Finalizing...")
             self.progress.emit(95)
+            QApplication.processEvents()
             
             # Run authentication using provided authenticator instance
             result = self.authenticator.authenticate(self.image_path)
             
+            # CRITICAL: Save debug images to disk BEFORE emitting signal
+            # This prevents passing large numpy arrays through Qt signals
+            if result.get('debug_ocr_image') is not None:
+                try:
+                    import tempfile
+                    temp_dir = tempfile.gettempdir()
+                    temp_path = os.path.join(temp_dir, 'ic_auth_debug_ocr.png')
+                    cv2.imwrite(temp_path, result['debug_ocr_image'])
+                    result['debug_ocr_image_path'] = temp_path
+                    del result['debug_ocr_image']  # Remove from memory
+                except Exception as e:
+                    print(f"Warning: Could not save debug OCR image: {e}")
+            
+            # Save preprocessing variants to disk
+            if result.get('debug_variants'):
+                try:
+                    import tempfile
+                    temp_dir = tempfile.gettempdir()
+                    variant_paths = []
+                    for idx, (name, img) in enumerate(result['debug_variants']):
+                        temp_path = os.path.join(temp_dir, f'ic_auth_variant_{idx}.png')
+                        cv2.imwrite(temp_path, img)
+                        variant_paths.append((name, temp_path))
+                    result['debug_variant_paths'] = variant_paths
+                    del result['debug_variants']  # Remove from memory
+                except Exception as e:
+                    print(f"Warning: Could not save variants: {e}")
+            
+            # Remove other large objects
+            if 'preprocessing_images' in result:
+                del result['preprocessing_images']
+            
             self.progress.emit(100)
             self.status.emit("✅ Analysis complete!")
             
-            # Emit result
+            # Force garbage collection before emitting
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Emit result (now without large numpy arrays)
             self.result.emit(result)
+            
+            # Final cleanup in thread
+            gc.collect()
             
         except Exception as e:
             import traceback
@@ -292,17 +339,18 @@ class ImageViewerDialog(QMessageBox):
 
 
 class PDFViewerDialog(QDialog):
-    """Embedded PDF viewer dialog"""
+    """Embedded PDF viewer dialog with continuous scrolling"""
     def __init__(self, pdf_path, parent=None):
         super().__init__(parent)
         self.pdf_path = pdf_path
-        self.current_page = 0
         self.zoom_level = 1.0
         self.doc = None
+        self.page_pixmaps = []
+        self._is_loading = False
         
         self.setWindowTitle(f"PDF Viewer - {os.path.basename(pdf_path)}")
         self.setModal(False)
-        self.resize(1100, 1200)  # Made bigger: was 900x1000, now 1100x1200
+        self.resize(1100, 1200)
         
         # Apply dark theme
         self.setStyleSheet("""
@@ -329,12 +377,6 @@ class PDFViewerDialog(QDialog):
             QLabel {
                 color: #e0e0e0;
             }
-            QSpinBox {
-                background-color: #2d2d2d;
-                color: #e0e0e0;
-                border: 1px solid #444;
-                padding: 5px;
-            }
         """)
         
         layout = QVBoxLayout(self)
@@ -343,24 +385,9 @@ class PDFViewerDialog(QDialog):
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         
-        # Navigation buttons
-        self.prev_btn = QPushButton("◀ Previous")
-        self.prev_btn.clicked.connect(self.prev_page)
-        toolbar_layout.addWidget(self.prev_btn)
-        
         # Page indicator
-        self.page_label = QLabel("Page 1 of 1")
+        self.page_label = QLabel("Loading PDF...")
         toolbar_layout.addWidget(self.page_label)
-        
-        # Go to page
-        self.page_spin = QSpinBox()
-        self.page_spin.setMinimum(1)
-        self.page_spin.valueChanged.connect(self.goto_page)
-        toolbar_layout.addWidget(self.page_spin)
-        
-        self.next_btn = QPushButton("Next ▶")
-        self.next_btn.clicked.connect(self.next_page)
-        toolbar_layout.addWidget(self.next_btn)
         
         toolbar_layout.addStretch()
         
@@ -378,91 +405,292 @@ class PDFViewerDialog(QDialog):
         
         layout.addWidget(toolbar)
         
-        # PDF display area
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #2a2a2a; }")
+        # PDF display area - continuous scrolling with all pages
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #2a2a2a; }")
         
-        self.pdf_label = QLabel()
-        self.pdf_label.setAlignment(Qt.AlignCenter)
-        self.pdf_label.setStyleSheet("background-color: #2a2a2a;")
-        scroll_area.setWidget(self.pdf_label)
+        # Container widget for all pages
+        self.pages_container = QWidget()
+        self.pages_layout = QVBoxLayout(self.pages_container)
+        self.pages_layout.setSpacing(10)  # Space between pages
+        self.pages_layout.setContentsMargins(20, 20, 20, 20)
+        self.pages_layout.setAlignment(Qt.AlignTop)
         
-        layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(self.pages_container)
+        layout.addWidget(self.scroll_area)
         
         # Load PDF
         self.load_pdf()
         
     def load_pdf(self):
-        """Load PDF file and display first page"""
+        """Load PDF file and display all pages in scrollable view"""
         if not PDF_AVAILABLE:
-            self.pdf_label.setText("⚠ PyMuPDF not installed\n\nInstall with: pip install PyMuPDF")
+            error_label = QLabel("⚠ PyMuPDF not installed\n\nInstall with: pip install PyMuPDF")
+            error_label.setAlignment(Qt.AlignCenter)
+            self.pages_layout.addWidget(error_label)
             return
             
         try:
-            self.doc = fitz.open(self.pdf_path)
-            self.page_spin.setMaximum(len(self.doc))
-            self.render_page()
+            print(f"[PDF] Loading: {self.pdf_path}")
+            
+            # Validate file exists and is readable
+            if not os.path.exists(self.pdf_path):
+                raise FileNotFoundError(f"PDF file not found: {self.pdf_path}")
+            
+            if not os.path.isfile(self.pdf_path):
+                raise ValueError(f"Path is not a file: {self.pdf_path}")
+            
+            if os.path.getsize(self.pdf_path) == 0:
+                raise ValueError("PDF file is empty (0 bytes)")
+            
+            # Try to open PDF with error handling
+            try:
+                self.doc = fitz.open(self.pdf_path)
+            except Exception as open_error:
+                raise Exception(f"Failed to open PDF: {str(open_error)}")
+            
+            if self.doc is None:
+                raise Exception("PDF document is None after opening")
+            
+            try:
+                total_pages = len(self.doc)
+            except Exception as len_error:
+                raise Exception(f"Failed to get page count: {str(len_error)}")
+            
+            if total_pages == 0:
+                raise Exception("PDF has 0 pages")
+            
+            self.page_label.setText(f"Total Pages: {total_pages}")
+            print(f"[PDF] Total pages: {total_pages}")
+            
+            # Limit pages to prevent memory issues
+            max_pages_to_render = min(total_pages, 200)  # Limit to 200 pages max
+            if total_pages > max_pages_to_render:
+                print(f"[PDF] WARNING: PDF has {total_pages} pages, limiting to {max_pages_to_render}")
+            
+            # Render pages with individual error handling
+            rendered_count = 0
+            for page_num in range(max_pages_to_render):
+                try:
+                    page = self.doc[page_num]
+                    
+                    # Render at higher resolution for better quality
+                    mat = fitz.Matrix(2.0 * self.zoom_level, 2.0 * self.zoom_level)
+                    pix = page.get_pixmap(matrix=mat)
+                    
+                    print(f"[PDF] Page {page_num+1}: {pix.width}x{pix.height}")
+                    
+                    # Validate pixmap dimensions
+                    if pix.width <= 0 or pix.height <= 0:
+                        print(f"[PDF] WARNING: Page {page_num+1} has invalid dimensions, skipping")
+                        continue
+                    
+                    # Convert to QImage with error handling
+                    try:
+                        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+                        if img.isNull():
+                            print(f"[PDF] WARNING: Page {page_num+1} QImage is null, skipping")
+                            continue
+                        
+                        pixmap = QPixmap.fromImage(img)
+                        if pixmap.isNull():
+                            print(f"[PDF] WARNING: Page {page_num+1} QPixmap is null, skipping")
+                            continue
+                    except Exception as img_error:
+                        print(f"[PDF] WARNING: Failed to convert page {page_num+1} to image: {img_error}")
+                        continue
+                    
+                    print(f"[PDF] Pixmap size: {pixmap.width()}x{pixmap.height()}")
+                    
+                    # Create label for this page
+                    page_label = QLabel()
+                    page_label.setPixmap(pixmap)
+                    page_label.setAlignment(Qt.AlignCenter)
+                    page_label.setScaledContents(False)
+                    page_label.setFixedSize(pixmap.size())
+                    
+                    # Add page number label
+                    page_num_label = QLabel(f"Page {page_num + 1}")
+                    page_num_label.setAlignment(Qt.AlignCenter)
+                    page_num_label.setStyleSheet("font-weight: bold; padding: 5px; color: #aaa;")
+                    
+                    self.pages_layout.addWidget(page_num_label)
+                    self.pages_layout.addWidget(page_label)
+                    
+                    self.page_pixmaps.append((page_label, pixmap))
+                    rendered_count += 1
+                    
+                except Exception as page_error:
+                    print(f"[PDF] ERROR on page {page_num+1}: {page_error}")
+                    # Continue with next page instead of failing completely
+                    continue
+            
+            if rendered_count == 0:
+                raise Exception("Failed to render any pages from PDF")
+            
+            # Force layout update and resize container to fit all pages
+            try:
+                self.pages_container.adjustSize()
+                print(f"[PDF] Container size: {self.pages_container.width()}x{self.pages_container.height()}")
+            except Exception as layout_error:
+                print(f"[PDF] WARNING: Layout adjustment failed: {layout_error}")
+            
+            print(f"[PDF] Successfully loaded {rendered_count}/{max_pages_to_render} pages")
+            
+            if rendered_count < total_pages:
+                warning_label = QLabel(f"⚠️ Showing {rendered_count} of {total_pages} pages")
+                warning_label.setAlignment(Qt.AlignCenter)
+                warning_label.setStyleSheet("color: #ffaa00; padding: 10px;")
+                self.pages_layout.addWidget(warning_label)
+                
         except Exception as e:
-            self.pdf_label.setText(f"❌ Error loading PDF:\n{str(e)}")
+            print(f"[PDF] CRITICAL ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             
-    def render_page(self):
-        """Render current page"""
-        if not self.doc:
-            return
+            error_msg = f"❌ Error loading PDF:\n\n{str(e)}\n\nFile: {os.path.basename(self.pdf_path)}"
+            error_label = QLabel(error_msg)
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setWordWrap(True)
+            error_label.setStyleSheet("color: #ff4444; padding: 20px;")
+            self.pages_layout.addWidget(error_label)
             
-        try:
-            page = self.doc[self.current_page]
+            # Clean up document if it was opened
+            try:
+                if hasattr(self, 'doc') and self.doc is not None:
+                    self.doc.close()
+                    self.doc = None
+            except:
+                pass
             
-            # Render at higher resolution for better quality
-            mat = fitz.Matrix(2.0 * self.zoom_level, 2.0 * self.zoom_level)
-            pix = page.get_pixmap(matrix=mat)
-            
-            # Convert to QImage
-            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(img)
-            
-            self.pdf_label.setPixmap(pixmap)
-            
-            # Update controls
-            self.page_label.setText(f"Page {self.current_page + 1} of {len(self.doc)}")
-            self.page_spin.setValue(self.current_page + 1)
-            self.zoom_label.setText(f"{int(self.zoom_level * 100)}%")
-            
-            # Enable/disable navigation
-            self.prev_btn.setEnabled(self.current_page > 0)
-            self.next_btn.setEnabled(self.current_page < len(self.doc) - 1)
-            
-        except Exception as e:
-            self.pdf_label.setText(f"❌ Error rendering page:\n{str(e)}")
-            
-    def next_page(self):
-        """Go to next page"""
-        if self.current_page < len(self.doc) - 1:
-            self.current_page += 1
-            self.render_page()
-            
-    def prev_page(self):
-        """Go to previous page"""
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.render_page()
-            
-    def goto_page(self, page_num):
-        """Go to specific page"""
-        self.current_page = page_num - 1
-        self.render_page()
-        
     def change_zoom(self, delta):
-        """Change zoom level"""
+        """Change zoom level and re-render all pages"""
+        if self._is_loading:
+            print("[PDF] Zoom change ignored - PDF is still loading")
+            return
+        
         self.zoom_level = max(0.5, min(3.0, self.zoom_level + delta))
-        self.render_page()
+        self.zoom_label.setText(f"{int(self.zoom_level * 100)}%")
+        
+        # Clear existing pages
+        try:
+            for i in reversed(range(self.pages_layout.count())): 
+                item = self.pages_layout.itemAt(i)
+                if item and item.widget():
+                    item.widget().setParent(None)
+        except Exception as clear_error:
+            print(f"[PDF] Warning: Error clearing pages: {clear_error}")
+        
+        self.page_pixmaps.clear()
+        
+        # Reload with new zoom
+        if self.doc:
+            try:
+                self._is_loading = True
+                total_pages = len(self.doc)
+                self.page_label.setText(f"Total Pages: {total_pages}")
+                
+                # Limit pages to prevent memory issues
+                max_pages = min(total_pages, 200)
+                rendered = 0
+                
+                for page_num in range(max_pages):
+                    try:
+                        page = self.doc[page_num]
+                        
+                        # Render with new zoom level
+                        mat = fitz.Matrix(2.0 * self.zoom_level, 2.0 * self.zoom_level)
+                        pix = page.get_pixmap(matrix=mat)
+                        
+                        # Convert to QImage
+                        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
+                        if img.isNull():
+                            continue
+                        
+                        pixmap = QPixmap.fromImage(img)
+                        if pixmap.isNull():
+                            continue
+                        
+                        # Create label for this page
+                        page_label = QLabel()
+                        page_label.setPixmap(pixmap)
+                        page_label.setAlignment(Qt.AlignCenter)
+                        page_label.setScaledContents(False)
+                        page_label.setFixedSize(pixmap.size())
+                        
+                        # Add page number label
+                        page_num_label = QLabel(f"Page {page_num + 1}")
+                        page_num_label.setAlignment(Qt.AlignCenter)
+                        page_num_label.setStyleSheet("font-weight: bold; padding: 5px; color: #aaa;")
+                        
+                        self.pages_layout.addWidget(page_num_label)
+                        self.pages_layout.addWidget(page_label)
+                        
+                        self.page_pixmaps.append((page_label, pixmap))
+                        rendered += 1
+                    except Exception as page_error:
+                        print(f"[PDF] Warning: Error rendering page {page_num+1}: {page_error}")
+                        continue
+                
+                # Force layout update
+                try:
+                    self.pages_container.adjustSize()
+                except Exception as layout_error:
+                    print(f"[PDF] Warning: Layout adjustment failed: {layout_error}")
+                
+                print(f"[PDF] Re-rendered {rendered} pages at {int(self.zoom_level * 100)}%")
+                    
+            except Exception as e:
+                print(f"[PDF] Error re-rendering: {e}")
+                import traceback
+                traceback.print_exc()
+                error_label = QLabel(f"❌ Error re-rendering:\n{str(e)}")
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("color: #ff4444; padding: 20px;")
+                self.pages_layout.addWidget(error_label)
+            finally:
+                self._is_loading = False
         
     def closeEvent(self, event):
         """Clean up when closing"""
-        if self.doc:
-            self.doc.close()
-        super().closeEvent(event)
+        print("[PDF] Closing PDF viewer, cleaning up resources...")
+        try:
+            # Clear pixmaps to free memory
+            self.page_pixmaps.clear()
+            
+            # Close PDF document
+            if self.doc is not None:
+                try:
+                    self.doc.close()
+                    print("[PDF] Document closed successfully")
+                except Exception as close_error:
+                    print(f"[PDF] Warning: Error closing document: {close_error}")
+                finally:
+                    self.doc = None
+            
+            # Clear layout widgets
+            try:
+                while self.pages_layout.count():
+                    item = self.pages_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+            except Exception as layout_error:
+                print(f"[PDF] Warning: Error clearing layout: {layout_error}")
+        except Exception as e:
+            print(f"[PDF] Warning: Error in closeEvent: {e}")
+        finally:
+            super().closeEvent(event)
+    
+    def __del__(self):
+        """Destructor - ensure resources are freed"""
+        try:
+            if hasattr(self, 'doc') and self.doc is not None:
+                self.doc.close()
+        except:
+            pass
 
 
 class ICAuthenticatorGUI(QMainWindow):
@@ -483,8 +711,49 @@ class ICAuthenticatorGUI(QMainWindow):
         QApplication.processEvents()  # Update UI immediately
         self.authenticator = Authenticator()
         
+        # CRITICAL FIX: Add periodic garbage collection to prevent memory buildup
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.timeout.connect(self.periodic_cleanup)
+        self.cleanup_timer.start(30000)  # Run cleanup every 30 seconds
+        
         self.init_ui()
         self.apply_theme()
+    
+    def periodic_cleanup(self):
+        """Periodic memory cleanup to prevent system from becoming unresponsive"""
+        try:
+            import gc
+            gc.collect()
+            
+            # Clear GPU cache if using CUDA
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Process pending events to keep UI responsive
+            QApplication.processEvents()
+        except Exception as e:
+            pass  # Silent fail - don't interrupt user
+    
+    def closeEvent(self, event):
+        """Clean up resources when closing"""
+        try:
+            # Stop cleanup timer
+            if hasattr(self, 'cleanup_timer'):
+                self.cleanup_timer.stop()
+            
+            # Clean up authenticator
+            if hasattr(self, 'authenticator'):
+                del self.authenticator
+            
+            # Final cleanup
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except:
+            pass
+        
+        event.accept()
     
     def showEvent(self, event):
         """Override showEvent to force icon refresh when window becomes visible"""
@@ -1009,11 +1278,17 @@ class ICAuthenticatorGUI(QMainWindow):
     def display_image(self, image_path):
         """Display the selected image"""
         try:
+            # Keep UI responsive
+            QApplication.processEvents()
+            
             image = cv2.imread(image_path)
             original_h, original_w = image.shape[:2]
             
             # Update image size info
             self.image_size.setText(f"{original_w}×{original_h}")
+            
+            # Keep UI responsive
+            QApplication.processEvents()
             
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             
@@ -1035,6 +1310,9 @@ class ICAuthenticatorGUI(QMainWindow):
             
             self.image_label.setPixmap(pixmap)
             self.image_label.setScaledContents(False)
+            
+            # Keep UI responsive
+            QApplication.processEvents()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {str(e)}")
@@ -1082,27 +1360,9 @@ class ICAuthenticatorGUI(QMainWindow):
             
         self.current_results = results
         
-        # MEMORY CLEANUP: Remove large numpy arrays from results after displaying
-        # Keep only essential data for display
-        if 'debug_ocr_image' in results and results['debug_ocr_image'] is not None:
-            # Already displayed, can remove
-            del results['debug_ocr_image']
-        
-        if 'debug_variants' in results:
-            # Already displayed in debug tab, can remove
-            del results['debug_variants']
-        
-        if 'preprocessing_images' in results:
-            # Already displayed, can remove
-            del results['preprocessing_images']
-        
-        # Force garbage collection immediately after display
-        import gc
-        gc.collect()
-        
-        # Clear GPU cache if using CUDA
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # NOTE: DO NOT delete debug_ocr_image and debug_variants yet!
+        # They are needed by update_debug_tab() which is called later
+        # We'll clean them up at the END of this function instead
         
         # Update status information
         if 'processing_time' in results:
@@ -1185,18 +1445,47 @@ class ICAuthenticatorGUI(QMainWindow):
         for reason in results.get('reasons', []):
             score_html += f"<li>{reason}</li>"
         score_html += "</ul>"
+        
+        # Add counterfeit reasons if available
+        if 'counterfeit_reasons' in results and results['counterfeit_reasons']:
+            score_html += "<h3 style='margin-top: 20px;'>Counterfeit Analysis:</h3>"
+            score_html += "<div style='background-color: #2a2a2a; padding: 10px; border-radius: 5px; font-family: monospace;'>"
+            for reason in results['counterfeit_reasons']:
+                # Preserve formatting and emojis
+                reason_escaped = reason.replace('<', '&lt;').replace('>', '&gt;')
+                score_html += f"<div style='margin-bottom: 5px;'>{reason_escaped}</div>"
+            score_html += "</div>"
+        
         self.score_text.setHtml(score_html)
         
         # Update Details Tab
         self.update_details_tab(results)
         
-        # Update Debug Tab
+        # Update Debug Tab (uses debug_ocr_image and debug_variants)
         self.update_debug_tab(results)
         
         # Update Raw Data Tab
         self.update_raw_tab(results)
         
         self.statusBar.showMessage(f"Analysis complete: {'AUTHENTIC' if is_authentic else 'COUNTERFEIT/SUSPICIOUS'}")
+        
+        # MEMORY CLEANUP: NOW safe to remove large numpy arrays after ALL tabs updated
+        if 'debug_ocr_image' in results and results['debug_ocr_image'] is not None:
+            del results['debug_ocr_image']
+        
+        if 'debug_variants' in results:
+            del results['debug_variants']
+        
+        if 'preprocessing_images' in results:
+            del results['preprocessing_images']
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear GPU cache if using CUDA
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
     def update_details_tab(self, results):
         """Update detailed analysis tab"""
@@ -1440,22 +1729,25 @@ class ICAuthenticatorGUI(QMainWindow):
         table.setColumnCount(7)
         table.setHorizontalHeaderLabels(['', 'Filename', 'Verdict', 'Confidence', 'Part Number', 'Datasheet', 'Action'])
         
-        # Set column widths - make them wider to prevent cutoff
-        table.setColumnWidth(0, 40)   # Icon
-        table.setColumnWidth(1, 300)  # Filename (increased)
-        table.setColumnWidth(2, 150)  # Verdict (increased)
-        table.setColumnWidth(3, 90)   # Confidence
-        table.setColumnWidth(4, 180)  # Part Number (increased)
-        table.setColumnWidth(5, 120)  # Datasheet (increased)
-        table.setColumnWidth(6, 100)  # Action
+        # Set minimum column widths for dynamic resizing
+        table.setColumnWidth(0, 40)   # Icon - fixed width
         
-        # Make table resize to fit contents
-        table.horizontalHeader().setStretchLastSection(True)
+        # Make columns resize dynamically to fit content - prevents text cutoff
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)  # Icon stays fixed
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Filename
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Verdict
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Confidence
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Part Number
+        table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Datasheet
+        table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Fixed)  # Action button - fixed
+        table.setColumnWidth(6, 100)  # Action button width
+        
+        # Allow table to stretch to fill window
         table.setWordWrap(False)
         table.resizeRowsToContents()
         
         # Configure table
-        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setStretchLastSection(True)
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(False)  # Disable alternating colors for uniform appearance
         table.setSelectionMode(QTableWidget.NoSelection)
@@ -2302,6 +2594,8 @@ class ICAuthenticatorGUI(QMainWindow):
     .value {{ color: #fff; }}
     a {{ color: #4A9EFF; text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
+    .counterfeit-box {{ background-color: #2a2a2a; padding: 10px; border-radius: 5px; 
+                        font-family: monospace; margin-top: 10px; }}
 </style>
 </head>
 <body>
@@ -2323,6 +2617,17 @@ class ICAuthenticatorGUI(QMainWindow):
             for reason in reasons:
                 html += f"<li>{reason}</li>"
             html += "</ul>"
+        
+        # Add counterfeit reasons if available (CRITICAL FIX)
+        counterfeit_reasons = result.get('counterfeit_reasons', [])
+        if counterfeit_reasons:
+            html += "<h3 style='margin-top: 20px;'>Counterfeit Analysis:</h3>"
+            html += "<div class='counterfeit-box'>"
+            for reason in counterfeit_reasons:
+                # Preserve formatting and emojis, escape HTML
+                reason_escaped = reason.replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
+                html += f"<div style='margin-bottom: 5px;'>{reason_escaped}</div>"
+            html += "</div>"
         
         # Add validation issues
         issues = result.get('validation_issues', [])
@@ -2705,35 +3010,52 @@ class ICAuthenticatorGUI(QMainWindow):
         self.export_raw_btn.setEnabled(True)
         
         # SECTION 1: OCR with text bounding boxes (FIRST)
-        if self.show_bboxes_cb.isChecked() and 'debug_ocr_image' in results:
-            self.ocr_group.setVisible(True)
+        # Check for both in-memory image and file path
+        debug_ocr_image = None
+        if self.show_bboxes_cb.isChecked():
+            if 'debug_ocr_image' in results and results['debug_ocr_image'] is not None:
+                debug_ocr_image = results['debug_ocr_image']
+            elif 'debug_ocr_image_path' in results and results['debug_ocr_image_path']:
+                # Load from disk
+                try:
+                    debug_ocr_image = cv2.imread(results['debug_ocr_image_path'])
+                except Exception as e:
+                    print(f"Warning: Could not load debug OCR image: {e}")
             
-            ocr_label = QLabel("Original image with detected text regions highlighted:")
-            ocr_label.setStyleSheet("font-weight: bold; font-size: 10pt; padding: 5px; color: #4A9EFF;")
-            self.ocr_layout.addWidget(ocr_label)
-            
-            # Display OCR image with clickable zoom
-            img = results['debug_ocr_image']
-            img_label = ClickableImageLabel()
-            img_label.setAlignment(Qt.AlignCenter)
-            
-            # Convert to QPixmap
-            if len(img.shape) == 2:
-                h, w = img.shape
-                q_image = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+            if debug_ocr_image is not None:
+                self.ocr_group.setVisible(True)
+                
+                ocr_label = QLabel("Original image with detected text regions highlighted:")
+                ocr_label.setStyleSheet("font-weight: bold; font-size: 10pt; padding: 5px; color: #4A9EFF;")
+                self.ocr_layout.addWidget(ocr_label)
+                
+                # Display OCR image with clickable zoom
+                img = debug_ocr_image
+                img_label = ClickableImageLabel()
+                img_label.setAlignment(Qt.AlignCenter)
+                
+                # Convert to QPixmap
+                if len(img.shape) == 2:
+                    h, w = img.shape
+                    q_image = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+                else:
+                    h, w, ch = img.shape
+                    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    q_image = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
+                
+                full_pixmap = QPixmap.fromImage(q_image)
+                scaled_pixmap = full_pixmap.scaled(700, 700, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                img_label.setPixmap(scaled_pixmap)
+                img_label.set_image(full_pixmap, "OCR Text Detection")
+                img_label.clicked.connect(self.show_image_viewer)
+                img_label.setStyleSheet("border: 2px solid #4A9EFF; padding: 5px; background: #2b2b2b;")
+                
+                self.ocr_layout.addWidget(img_label)
+                
+                # MEMORY: Delete after display
+                del debug_ocr_image
             else:
-                h, w, ch = img.shape
-                rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                q_image = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
-            
-            full_pixmap = QPixmap.fromImage(q_image)
-            scaled_pixmap = full_pixmap.scaled(700, 700, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            img_label.setPixmap(scaled_pixmap)
-            img_label.set_image(full_pixmap, "OCR Text Detection")
-            img_label.clicked.connect(self.show_image_viewer)
-            img_label.setStyleSheet("border: 2px solid #4A9EFF; padding: 5px; background: #2b2b2b;")
-            
-            self.ocr_layout.addWidget(img_label)
+                self.ocr_group.setVisible(False)
         else:
             self.ocr_group.setVisible(False)
         
@@ -2741,10 +3063,22 @@ class ICAuthenticatorGUI(QMainWindow):
         if self.show_preprocessed_cb.isChecked():
             self.preprocessing_group.setVisible(True)
             
-            # Check if preprocessing variants exist
+            # Check for variants (in-memory or file paths)
+            variants = None
             if 'debug_variants' in results and results['debug_variants']:
                 variants = results['debug_variants']
-                
+            elif 'debug_variant_paths' in results and results['debug_variant_paths']:
+                # Load variants from disk
+                variants = []
+                for name, path in results['debug_variant_paths']:
+                    try:
+                        img = cv2.imread(path)
+                        if img is not None:
+                            variants.append((name, img))
+                    except Exception as e:
+                        print(f"Warning: Could not load variant {name}: {e}")
+            
+            if variants:
                 # Add subtitle
                 subtitle = QLabel(f"Showing {len(variants[:8])} preprocessing variants used for text extraction:")
                 subtitle.setStyleSheet("font-size: 9pt; padding: 5px; color: #888; font-style: italic;")
@@ -2802,6 +3136,9 @@ class ICAuthenticatorGUI(QMainWindow):
                         row += 1
                 
                 self.preprocessing_layout.addWidget(grid_container)
+                
+                # MEMORY: Delete variants after display
+                del variants
             else:
                 # Show message when no preprocessing was needed
                 no_preprocessing_label = QLabel("✅ No preprocessing needed - image quality was sufficient for direct text extraction")
@@ -2998,11 +3335,48 @@ class ICAuthenticatorGUI(QMainWindow):
             return
         
         try:
-            # Open PDF viewer dialog
+            # Open PDF viewer dialog with comprehensive error handling
             viewer = PDFViewerDialog(pdf_path, self)
             viewer.exec_()
+        except KeyboardInterrupt:
+            print("[PDF] User cancelled PDF viewer")
+            pass
+        except MemoryError:
+            print(f"[ERROR] Out of memory loading PDF: {pdf_path}")
+            QMessageBox.critical(
+                self,
+                "Memory Error",
+                f"Not enough memory to load this PDF.\n\nFile: {os.path.basename(pdf_path)}\n\nTry opening with system viewer instead."
+            )
+            # Offer to open with system viewer
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(pdf_path)
+            except:
+                pass
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open PDF viewer:\n{str(e)}")
+            print(f"[ERROR] Failed to open PDF viewer: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            reply = QMessageBox.question(
+                self,
+                "PDF Viewer Error",
+                f"Failed to open PDF viewer:\n\n{str(e)}\n\nOpen with system PDF viewer instead?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                try:
+                    if sys.platform == 'win32':
+                        os.startfile(pdf_path)
+                    elif sys.platform == 'darwin':  # macOS
+                        os.system(f'open "{pdf_path}"')
+                    else:  # Linux
+                        os.system(f'xdg-open "{pdf_path}"')
+                except Exception as fallback_error:
+                    QMessageBox.critical(self, "Error", f"Failed to open PDF:\n{str(fallback_error)}")
     
     def on_datasheet_link_clicked(self, url):
         """Handle datasheet link clicks - cached PDFs in viewer, URLs in browser"""
@@ -3044,19 +3418,69 @@ class ICAuthenticatorGUI(QMainWindow):
             # Normalize path for Windows (convert forward slashes to backslashes)
             local_path = os.path.normpath(local_path)
             
+            # Additional cleaning for Windows paths
+            # Remove any leading slash if path starts with drive letter
+            if len(local_path) > 2 and local_path[1] == ':' and local_path[0] == '/':
+                local_path = local_path[1:]
+            elif len(local_path) > 2 and local_path[1] == ':' and local_path[0] == '\\':
+                local_path = local_path[1:]
+            
+            print(f"[DEBUG] Opening PDF: {local_path}")
+            print(f"[DEBUG] File exists: {os.path.exists(local_path)}")
+            
             # Check if file exists
             if not os.path.exists(local_path):
                 QMessageBox.warning(
                     self,
                     "PDF Not Found",
-                    f"Cached PDF file not found:\n{local_path}"
+                    f"Cached PDF file not found:\n{local_path}\n\nOriginal URL: {url}"
                 )
                 return
             
             # Open with embedded PDF viewer
             if PDF_AVAILABLE:
-                viewer = PDFViewerDialog(local_path, self)
-                viewer.exec_()
+                try:
+                    viewer = PDFViewerDialog(local_path, self)
+                    viewer.exec_()
+                except KeyboardInterrupt:
+                    print("[PDF] User cancelled PDF viewer")
+                    pass
+                except MemoryError:
+                    print(f"[ERROR] Out of memory loading PDF")
+                    QMessageBox.critical(
+                        self,
+                        "Memory Error",
+                        f"Not enough memory to load this PDF.\n\nFile: {os.path.basename(local_path)}\n\nTrying system viewer instead..."
+                    )
+                    try:
+                        if sys.platform == 'win32':
+                            os.startfile(local_path)
+                    except:
+                        pass
+                except Exception as pdf_error:
+                    print(f"[ERROR] PDF viewer failed: {pdf_error}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Try fallback to system viewer
+                    reply = QMessageBox.question(
+                        self,
+                        "PDF Viewer Error",
+                        f"Embedded PDF viewer failed:\n\n{str(pdf_error)}\n\nOpen with system PDF viewer instead?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        try:
+                            if sys.platform == 'win32':
+                                os.startfile(local_path)
+                            elif sys.platform == 'darwin':  # macOS
+                                os.system(f'open "{local_path}"')
+                            else:  # Linux
+                                os.system(f'xdg-open "{local_path}"')
+                        except Exception as fallback_error:
+                            QMessageBox.critical(self, "Error", f"Failed to open PDF:\n{str(fallback_error)}")
             else:
                 # Fallback to system viewer
                 if sys.platform == 'win32':
@@ -3066,7 +3490,10 @@ class ICAuthenticatorGUI(QMainWindow):
                 else:  # Linux
                     os.system(f'xdg-open "{local_path}"')
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open datasheet:\n{str(e)}")
+            print(f"[ERROR] Failed to open datasheet: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to open datasheet:\n{str(e)}\n\nURL: {url}")
     
     
     def toggle_theme(self):
