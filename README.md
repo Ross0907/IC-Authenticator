@@ -370,12 +370,13 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 
 ### Main Interface - Analysis View
 
-![Main Interface](README_imgs/image-1760146329471.png)
+![Main Interface](README_imgs/image-1760146520936.png)
 
 **Key Features:**
 - **Image Preview Panel (Left)**: Displays the selected IC image with preview
-- **Debug Images Tab**: Shows text detection with OCR bounding boxes highlighting detected regions
-- **Results Display**: Shows authentication verdict, confidence score, and detailed analysis
+- **Summary Tab**: Shows authentication verdict (LIKELY AUTHENTIC - 75%), confidence score, and key information
+- **Part Number**: ATMEGA328P with manufacturer (Microchip) identification
+- **Authentication Breakdown**: Shows counterfeit analysis and scoring details
 - **Status Information**: Shows GPU detection, processing time, and memory usage (optimized in v7.0.17)
 
 **How to Use:**
@@ -389,16 +390,15 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 
 ### Raw Data Tab
 
-![Raw Data](README_imgs/image-1760146387684.png)
+![Raw Data](README_imgs/image-1760146329471.png)
 
 **Purpose**: Provides complete JSON output for developers and advanced users
 
 **Contains:**
 - Full OCR extraction results with confidence scores for each text detection
 - Bounding box coordinates for all detected text regions
-- Processing variant details showing which preprocessing method found each text
-- Complete authentication metadata including timestamps and GPU usage
-- Part number, manufacturer, and date code extraction details
+- Complete authentication metadata including datasheet URLs and verification status
+- Part number, manufacturer, and date code extraction details in JSON format
 
 **Use Cases:**
 - Debugging OCR accuracy issues
@@ -410,18 +410,19 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 
 ### Summary Tab - Authentication Results
 
-![Summary Tab](README_imgs/image-1760146520936.png)
+![Summary Tab](README_imgs/image-1760146370334.png)
 
 **Purpose**: Displays the final authentication verdict with comprehensive scoring
 
 **Key Information:**
-- **Verdict Banner**: Large green (✓ AUTHENTIC) or red (✗ COUNTERFEIT/SUSPICIOUS) status
+- **Verdict Banner**: Large green (✓ LIKELY AUTHENTIC) banner with confidence percentage
 - **Overall Confidence**: Percentage score (0-100%) indicating authentication certainty
-- **Part Number**: Extracted IC part number (e.g., LT1013, MC33774, SN74HC595N)
-- **Manufacturer**: Identified manufacturer (e.g., LINEAR, NXP, Texas Instruments)
-- **Date Code**: Manufacturing date code in YYWW format when present
-- **OCR Confidence**: Quality score for text extraction
-- **Datasheet Status**: ✅ Found or ❌ Not Found with source information
+- **Part Number**: Extracted IC part number (e.g., ATMEGA328P)
+- **Manufacturer**: Identified manufacturer (e.g., Microchip)
+- **Date Code**: Manufacturing date code when present
+- **Confidence Score**: Overall authentication confidence (e.g., 75%)
+- **OCR Confidence**: Quality score for text extraction (e.g., 36.9%)
+- **Datasheet Status**: ✅ Found with verified manufacturer source
 
 **Scoring Breakdown:**
 The system uses a 100-point scale with penalties for issues:
@@ -434,29 +435,28 @@ The system uses a 100-point scale with penalties for issues:
 
 ### Detailed Analysis Tab
 
-![Detailed Analysis](README_imgs/image-1760146396007.png)
+![Detailed Analysis](README_imgs/image-1760146387684.png)
 
 **Purpose**: Shows in-depth validation and verification details
 
 **Sections:**
 
 1. **Marking Validation**
-   - Manufacturer identification and validation status
-   - Format verification (✅ PASSED or ✗ FAILED)
-   - Date code format validation
-   - Identified marking issues with explanations
+   - Manufacturer identification and validation status (e.g., Microchip)
+   - Validation Status: ✗ FAILED when issues detected
+   - Identified marking issues with explanations (e.g., "No issues found - Mostly are valid")
 
 2. **Datasheet Information**
-   - Datasheet verification status (Found/Not Found)
-   - Source database (e.g., DatasheetArchive, Octopart, Digikey, manufacturer sites)
-   - Direct URL link to datasheet
-   - Confidence level (high/medium/low)
+   - Datasheet verification status (✅ Datasheet Found)
+   - Source: Local Cache or manufacturer website
+   - Manufacturer URL: Direct link to official datasheet PDF
+   - Local PDF path showing cached location
 
 3. **OCR Extraction Details**
    - Complete extracted text from all preprocessing variants
-   - Overall OCR confidence percentage
-   - Individual detection results with confidence scores per text element
-   - Preprocessing variant that produced each detection
+   - Full Text: Shows all detected text (e.g., "ATMEL AT MEGA328P 20AU 0723")
+   - Overall confidence percentage (e.g., 36.9%)
+   - Individual detections table with confidence scores per text element
 
 **Why This Matters:**
 - Identifies specific counterfeit indicators (wrong date format, invalid manufacturer codes)
@@ -468,15 +468,16 @@ The system uses a 100-point scale with penalties for issues:
 
 ### Debug Images Tab - Text Detection Visualization
 
-![Debug Images](README_imgs/image-1760146532332.png)
+![Debug Images](README_imgs/image-1760146489439.png)
 
 **Purpose**: Visualizes the OCR text detection process with bounding boxes
 
 **What You See:**
-- Original image with **green bounding boxes** around detected text regions
-- Each detected text element is highlighted individually
-- Shows exactly what text the OCR system found and where
+- Original image with **yellow bounding boxes** around detected text regions
+- Each detected text element is highlighted individually with confidence scores
+- Shows exactly what text the OCR system found and where (e.g., "ATMEL (0.39)", "AT MEGA328P (0.29)", "20AU (0.20723)")
 - Memory-optimized display (v7.0.17 - loads from disk, not memory)
+- Preprocessing variants shown below the main detection image
 
 **Example Analysis:**
 In the image above (IC: LT1211, LT1013, ACN8):
@@ -495,24 +496,20 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Image Preprocessing Variants
 
-![Preprocessing Variants](README_imgs/image-1760146489439.png)
+![Preprocessing Variants](README_imgs/image-1760146532332.png)
 
 **Purpose**: Shows the different image enhancement methods used for robust text extraction
 
-**The 7 Variants:**
+**The Preprocessing Variants:**
 
-1. **original**: Unmodified image for baseline comparison
-2. **upscale_2x**: 2x resolution enhancement for small text
-3. **upscale_3x**: 3x resolution enhancement for very small or detailed text
-4. **enhanced_trocr**: Optimized for TrOCR (Microsoft's OCR model)
-5. **enhanced_easyocr**: Optimized for EasyOCR with high contrast
-6. **enhanced_doctr**: Optimized for docTR with edge enhancement
-7. **enhanced_mild**: Gentle enhancement preserving natural appearance
+1. **CLAHE Enhanced**: Contrast Limited Adaptive Histogram Equalization for better contrast
+2. **Bilateral Filter**: Noise reduction while preserving edges
+3. **Adaptive Threshold**: High-contrast binary image for clear text separation
 
 **Why Multiple Variants?**
 - Different IC manufacturers use different marking techniques (laser etching, printing, engraving)
-- Some text is easier to read after contrast enhancement, others after upscaling
-- The system automatically selects the best result from all 7 variants
+- Some text is easier to read after contrast enhancement, others after different filtering
+- The system automatically selects the best result from all variants
 - This ensemble approach dramatically improves accuracy (typically 85-95% success rate)
 
 **Technical Details:**
@@ -530,14 +527,15 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 **Key Features:**
 - **Summary Statistics**: 
-  - Total images processed
-  - Authentication breakdown: X Authentic | Y Counterfeit | Z Errors
+  - Total images processed (e.g., "Successfully processed 12 images!")
+  - Authentication breakdown: 7 Authentic | 1 Counterfeit | 0 Errors
 - **Results Table**: Shows all processed images with:
-  - ✓ or ✗ verdict indicator
+  - ✓ (green checkmark) or ✗ (red X) verdict indicator
   - Filename
-  - Authenticity status (LIKELY AUTHENTIC/LIKELY COUNTERFEIT)
+  - Verdict (AUTHENTIC/LIKELY AUT.../LIKELY CO...)
   - Confidence percentage
-  - Identified part number
+  - Part Number identified
+  - Datasheet status (✅ Found)
   - "View" button to see detailed results for each image
 - **Dynamic Column Sizing**: Text no longer truncated (v7.0.17 fix)
 - **Counterfeit Reasons**: Detailed explanations for each result (v7.0.17)
@@ -551,26 +549,28 @@ In the image above (IC: LT1211, LT1013, ACN8):
 6. Export results using **"Save Report"** or **"Export All Debug Data"**
 
 **Example Results:**
-- ADC0831: ✓ AUTHENTIC (96%)
-- MC33774: ✓ AUTHENTIC (83%)
-- Screenshot 2025-10-06...: ✗ COUNTERFEIT (62%) - Invalid marking
-- SN74HC595N: ✓ AUTHENTIC (91%)
+- 2-Figure2-1.png: ✓ AUTHENTIC (100%) - AUCH16244X
+- 51c1ee09ce395f421f000000.png: ✓ AUTHENTIC (82%) - PIC18F45K22
+- 51c206efce395f0f0d000003.png: ✓ AUTHENTIC (100%) - M74HC238B1
+- 602-00015.png: LIKELY AUT... (75%) - LM358N
+- Screenshot 2025-10-06 222749.p...: ✗ LIKELY CO... (0%) - CY8C29666 (Counterfeit detected)
 
 ---
 
 ### Batch Result Details - Individual IC
 
-![Individual Batch Result - Summary](README_imgs/image-1760146370334.png)
+![Individual Batch Result - Summary](README_imgs/image-1760146396007.png)
 
-**Purpose**: Detailed view of a single IC from batch processing
+**Purpose**: Detailed view of a single IC from batch processing (LM358N example - 75% confidence)
 
 **Summary Tab Shows:**
-- Authentication verdict with confidence
-- Filename and part number
-- Manufacturer identification
-- Date codes extracted
-- Confidence score
-- Datasheet verification status
+- Authentication verdict with confidence (✅ LIKELY AUTHENTIC - Confidence: 75%)
+- Filename: 602-00015.png
+- Part Number: LM358N
+- Manufacturer: Texas Instruments
+- Date Codes: None detected
+- Confidence: 75%
+- Datasheet: Link to Texas Instruments official datasheet
 
 **Navigation:**
 - **Summary**: Quick overview (shown above)
@@ -588,15 +588,15 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Detailed OCR Analysis
 
-![OCR Details](README_imgs/image-1760146329471.png)
+![OCR Details](README_imgs/image-1760146476545.png)
 
-**Purpose**: Shows exactly how the OCR system extracted and interpreted text
+**Purpose**: Shows exactly how the OCR system extracted and interpreted text (Details tab from batch result)
 
 **Information Displayed:**
-- **OCR Confidence**: Overall quality score (e.g., 66.96%)
-- **Full Text**: Complete extracted text (e.g., "MC33774 NXS 1 NX5")
+- **OCR Confidence**: Overall quality score (e.g., 27.4%)
+- **Full Text**: Complete extracted text (e.g., "Fed4sJp LM 358N")
 - **Processing Details**:
-  - Processing time (e.g., 5.30s)
+  - Processing time (e.g., 0.00s)
   - GPU acceleration status
   - Timestamp of analysis
 
@@ -610,78 +610,78 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 ### Debug Preprocessing Visualization
 
-![Debug Preprocessing](README_imgs/image-1760146570499.png)
+![Debug Preprocessing](README_imgs/image-1760146558557.png)
 
-**Purpose**: See the actual preprocessing results that fed into the OCR engine
+**Purpose**: See the actual preprocessing results that fed into the OCR engine - showing batch processing completion
 
-**Shows All 7 Variants:**
-- Visual comparison of each preprocessing method
-- See which enhancement techniques work best for different IC types
-- Understand why certain text was or wasn't detected
+**What You See:**
+- Batch processing completion dialog with datasheet viewer
+- PDF Viewer showing MC33772C datasheet (Battery cell controller IC)
+- Multiple processed images listed in background table
+- Success statistics (7 authentic, 1 likely authentic, 0 suspicious, 1 counterfeit, 0 errors)
 
 **Analysis Example:**
-- **original**: Raw image, sometimes too low contrast
-- **upscale_2x/3x**: Enlarged for small text like date codes
-- **enhanced_easyocr**: High contrast binary image, excellent for printed text
-- **enhanced_trocr**: Balanced enhancement, good for laser-etched text
-- **enhanced_doctr**: Edge-enhanced, useful for engraved markings
+- Batch processing results showing mixed authentication outcomes
+- Datasheet viewer integrated into the workflow
+- MC33772C datasheet displayed with product information
+- General description and features visible in PDF viewer
 
 **Practical Use:**
-- If text wasn't detected, check which variant showed it most clearly
-- Identify optimal preprocessing for similar IC types in future
-- Debug OCR failures by seeing what the system "saw"
-- Fine-tune parameters for custom IC analysis workflows
+- Monitor batch processing completion
+- Access datasheets immediately after authentication
+- Review processed images and their results
+- Export debug data or save reports for documentation
 
 ---
 
 ### Datasheet Viewer
 
-![Datasheet Viewer](README_imgs/image-1760146558557.png)
+![Datasheet Viewer](README_imgs/image-1760146570499.png)
 
 **Purpose**: Display manufacturer datasheets directly in the application
 
 **Features:**
+- **Embedded PDF Viewer**: Displays datasheet pages with zoom controls (100%, + -)
+- **Page Navigation**: Shows current page (Page 1) and total pages (e.g., Total Pages: 651)
 - **6-Level Error Handling**: Prevents crashes from corrupted PDFs (v3.0.6+)
 - **200-Page Limit**: Prevents system overload from massive documents
-- **Embedded Viewer**: PyMuPDF-based PDF rendering with zoom controls
 - **Fallback Mechanisms**: System viewer → web browser if embedded fails
 - **Caching System**: Downloads stored locally for offline access
 
 **How It Works:**
 1. System searches known URLs and manufacturer websites
 2. Downloads PDF and caches in `datasheet_cache/`
-3. Renders in embedded viewer with proper file:// URI support
+3. Renders in embedded viewer with proper file:// URI support (shown: ATMEGA328P datasheet)
 4. Automatic fallback if rendering fails
 
 ---
 
-### Marking Validation - Invalid Date Code Example
+### Marking Validation - Counterfeit Detection Example
 
-![Invalid Date Code](README_imgs/image-1760146476545.png)
+![Counterfeit Detection](README_imgs/image-1760146558557.png)
 
 **Purpose**: Demonstrates how the system detects counterfeit indicators
 
-**Example Shown:**
-- **Manufacturer**: UNKNOWN (red flag - manufacturer not recognized)
-- **Validation Status**: ✗ FAILED
-- **Issue Found**: "[MAJOR] Invalid date format: JSHH (expected YYWW)"
+**Example Shown: CY8C29666 (0% Confidence - Counterfeit Detected)**
+- **Manufacturer**: Infineon
+- **Validation Status**: ✗ LIKELY COUNTERFEIT
+- **Confidence**: 0%
 
 **Datasheet Verification:**
-- Status: ✅ Datasheet Found (part exists)
-- Source: DatasheetArchive
-- URL provided for manual verification
+- Status: ✅ Datasheet Found (part exists, validating authenticity is crucial)
+- Source: Infineon official website
+- URL: Direct link to CY8C29466 automotive datasheet PDF
 
-**OCR Extraction:**
-- Full text: "FED4SJE LM 358N"
-- Overall confidence: 49.3% (low, indicates poor image quality or counterfeit)
-- Individual detections show varying confidence levels
+**Authentication Details:**
+- Part number verified against official datasheet
+- Official datasheet found and validated
+- Source: Infineon (official manufacturer)
 
 **Counterfeit Indicators:**
-- Invalid or missing date code format
-- Unknown manufacturer markings
-- Low OCR confidence (poor print quality)
-- Manufacturer/part number mismatch
-- Missing expected markings
+- Confidence score: 0% (critical - definite counterfeit)
+- Part number mismatch or suspicious markings detected
+- Failed validation checks despite datasheet availability
+- Red banner warning: ✗ LIKELY COUNTERFEIT
 
 **Authentication Score Impact:**
 - Valid manufacturer: +40 points
