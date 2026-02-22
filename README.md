@@ -3,11 +3,9 @@
 <div align="center">
 
 ![Version](https://img.shields.io/badge/version-7.0.17-blue.svg)
-![Status](https://img.shields.io/badge/status-production-green.svg)
 ![Python](https://img.shields.io/badge/python-3.13.5-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![GPU](https://img.shields.io/badge/GPU-accelerated-orange.svg)
-![Memory](https://img.shields.io/badge/memory-optimized-success.svg)
 
 **A professional GPU-accelerated system for detecting counterfeit integrated circuits using intelligent OCR with auto-orientation, manufacturer marking validation, and datasheet verification.**
 
