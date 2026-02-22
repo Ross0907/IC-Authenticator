@@ -46,47 +46,11 @@ This system analyzes IC (Integrated Circuit) chip images to determine authentici
 
 ### Key Capabilities
 
-- ✅ **Intelligent OCR** - GPU-accelerated OCR with automatic orientation detection (0°, 90°, 180°, 270°) and 5+ preprocessing methods
-- ✅ **Manufacturer Marking Validation** - Pattern-based verification using industry standards
-- ✅ **Datasheet Verification** - Automatic lookup across 5+ trusted sources with PDF parsing and caching
-- ✅ **Intelligent Counterfeit Detection** - Pattern recognition for misspellings, old date codes, and combined indicators
-- ✅ **Comprehensive Scoring** - 100-point authentication system with detailed breakdown
-
-### 🆕 Latest Improvements (v7.0.17) - CRITICAL MEMORY FIX
-
-**Memory Optimization (CRITICAL):**
-- ✅ **Memory Leak Fixed** - Reduced RAM usage from 3GB+ to 15MB per image (99.5% reduction)
-- ✅ **Disk-Based Debug Images** - Debug images saved to temporary files instead of memory
-- ✅ **Smart Signal Management** - Only file paths passed through Qt signals (not numpy arrays)
-- ✅ **Periodic Cleanup** - Automatic garbage collection every 30 seconds
-- ✅ **UI Responsiveness** - Never freezes during heavy processing
-
-**UI Improvements:**
-- ✅ **Dynamic Table Columns** - Text no longer truncated in batch results (fixed "LIKEL Y" bug)
-- ✅ **Counterfeit Reasons in Batch** - Detailed explanations shown for each batch result
-- ✅ **ProcessEvents Integration** - UI stays responsive during image loading
-
-**Performance Results:**
-- ✅ **LT1013 Image**: 3,072 MB → 15 MB (99.5% reduction)
-- ✅ **Average Image**: 150-200 MB → 10-20 MB (90% reduction)
-- ✅ **System Stability**: No more freezing after 2-3 minutes
-- ✅ **Indefinite Usage**: Stable performance for hours of continuous use
-
-### Previous Improvements (v3.0.6)
-
-**System Optimization:**
-- ✅ **YOLO Removal** - Simplified architecture eliminates YOLO dependency for faster startup
-- ✅ **Auto-Orientation Detection** - Tests 4 cardinal rotations (0°, 90°, 180°, 270°) automatically
-- ✅ **Smart Rotation Selection** - Chooses best orientation based on alphanumeric character detection
-- ✅ **Faster Processing** - Reduced memory footprint and improved initialization time
-- ✅ **PDF Datasheet Support** - Returns proper file:// URIs for cached local datasheets
-
-**Test Results:**
-- ✅ **100% detection rate** on confirmed counterfeits (2/2 detected)
-- ✅ **No false negatives** (all counterfeits caught)
-- ✅ **Reduced false positives** (smart filtering of OCR errors)
-
----
+- **Intelligent OCR** - GPU-accelerated OCR with automatic orientation detection (0°, 90°, 180°, 270°) and 5+ preprocessing methods
+- **Manufacturer Marking Validation** - Pattern-based verification using industry standards
+- **Datasheet Verification** - Automatic lookup across 5+ trusted sources with PDF parsing and caching
+- **Intelligent Counterfeit Detection** - Pattern recognition for misspellings, old date codes, and combined indicators
+- **Comprehensive Scoring** - 100-point authentication system with detailed breakdown
 
 ## ✨ Features
 
@@ -124,101 +88,9 @@ This system analyzes IC (Integrated Circuit) chip images to determine authentici
 - **"2007" Pattern Detection** - Specific counterfeit indicator detection
 - **Combined Indicator Analysis** - Escalates to CRITICAL when multiple suspicious patterns detected
 - **Datasheet-Aware Verdicts** - More lenient when manufacturer datasheet verified
-
-### Professional GUI
-- **Two interface options**: Classic (tabbed) and Modern (card-based)
-- **Dark/Light themes** with persistent preferences
-- **Real-time progress tracking**
-- **Comprehensive result display** with detailed breakdowns
-- **Debug visualization** - View preprocessing steps and OCR detection boxes
-- **Batch processing** - Process multiple images simultaneously
-
 ---
 
-## �️ Technology Stack & Implementation
-
-### Core Technologies
-
-**Framework & Language:**
-- **Python 3.13.5** - Primary programming language
-- **PyQt5 5.15+** - GUI framework (QMainWindow, QDialog, QTableWidget, QThread, QTimer, QScrollArea)
-
-**AI & Computer Vision:**
-- **EasyOCR 1.7+** - GPU-accelerated optical character recognition
-- **PyTorch 2.0+** - Deep learning backend with CUDA support
-- **OpenCV 4.8+** - Image preprocessing, morphological operations, bounding box visualization
-- **CUDA 11.8** - NVIDIA GPU acceleration for 10x faster OCR
-
-**PDF & Web Integration:**
-- **PyMuPDF (fitz)** - PDF rendering with 6-level error handling
-- **BeautifulSoup4 4.12+** - HTML parsing for datasheet web scraping
-- **Requests 2.31+** - HTTP client for datasheet downloads
-
-**Utilities:**
-- **tempfile** - Temporary file management for debug images (v7.0.17 memory fix)
-- **NumPy 1.24+** - Numerical computing and array operations
-- **Pillow 10.0+** - Image handling and format conversion
-- **json** - Configuration and cache management
-- **gc** - Manual garbage collection for memory optimization
-
-### Implementation Architecture
-
-**Threading Model:**
-```
-Main Thread (GUI)
-    ↓
-QThread → ProcessingThread
-    ↓
-    ├── Load Image (OpenCV)
-    ├── Preprocess Variants
-    ├── OCR Extraction (EasyOCR + CUDA)
-    ├── Save Debug Images to Disk (v7.0.17)
-    └── Emit File Paths (not numpy arrays)
-    
-QTimer → Memory Cleanup (30s intervals)
-```
-
-**Memory Management Strategy (v7.0.17):**
-1. **Immediate Disk Write** - Debug images saved to `tempfile.gettempdir()` after generation
-2. **Array Deletion** - `del` numpy arrays immediately after saving to disk
-3. **Forced Garbage Collection** - `gc.collect()` after each operation
-4. **GPU Cache Clearing** - `torch.cuda.empty_cache()` periodically
-5. **QTimer Cleanup** - Every 30 seconds, purge old references
-6. **ProcessEvents** - Keep UI responsive with `QApplication.processEvents()`
-
-**Signal-Based Communication (v7.0.17 Fix):**
-```python
-# OLD (Memory Leak):
-self.result_ready.emit({'debug_image': numpy_array_50MB})  # ❌ Bloats memory
-
-# NEW (Optimized):
-debug_path = os.path.join(tempfile.gettempdir(), f"debug_{uuid}.png")
-cv2.imwrite(debug_path, numpy_array)
-del numpy_array  # Free memory immediately
-self.result_ready.emit({'debug_image_path': debug_path})  # ✅ Only ~100 bytes
-```
-
----
-
-## �📋 Requirements
-
-### System Requirements
-
-**Minimum:**
-- Windows 10/11 (64-bit)
-- Python 3.13.5
-- 4 GB RAM (8 GB recommended)
-- 500 MB disk space (more for datasheet cache)
-- Internet connection (for datasheet verification)
-
-**Recommended:**
-- NVIDIA GPU with CUDA support (RTX 2060 or better)
-- 16 GB RAM
-- CUDA 11.8+
-- 2 GB free disk space
-- High-resolution camera for IC photography
-
-### Software Dependencies
+## 📋 Requirements
 
 **Core Libraries:**
 ```
@@ -251,46 +123,14 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 
 ## 💻 Installation
 
-### Method 1: End User Installation (Recommended)
-
-**For users who want to run the application:**
-
-1. Download `ICAuthenticator_Setup_v7.0.17.exe` from the [releases page](https://github.com/Ross0907/Ic_detection/releases)
-2. Run the installer (requires administrator privileges)
-3. Follow the installation wizard
-4. Python and dependencies will be installed automatically if needed
-5. Launch from desktop shortcut or Start menu
-
-**What the installer does:**
-- ✅ Checks for Python 3.13.5 installation
-- ✅ Downloads and installs Python if not present
-- ✅ Installs all required dependencies automatically
-- ✅ Creates desktop shortcut
-- ✅ Adds Start menu entry
-- ✅ Sets up uninstaller
-
-### Method 2: Developer Installation
-
-**For developers who want to modify the code:**
-
 #### Prerequisites
 
-1. **Python 3.11 or later**
-   ```
-   Download from: https://www.python.org/downloads/
-   During installation: Check "Add Python to PATH"
-   ```
-
-2. **Git** (optional, for cloning)
-   ```
-   Download from: https://git-scm.com/downloads
-   ```
-
-3. **NVIDIA GPU with CUDA support** (optional but recommended)
+1. **NVIDIA GPU with CUDA support** (optional but recommended)
    ```
    Check GPU compatibility: https://developer.nvidia.com/cuda-gpus
    Install CUDA Toolkit 11.8: https://developer.nvidia.com/cuda-downloads
    ```
+    note: python and other dependancies are installed by the installer automatically if not found.
 
 #### Installation Steps
 
@@ -320,19 +160,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
    ```
 
-4. **Verify installation**
-   ```bash
-   # Check Python version
-   python --version
-   
-   # Check if CUDA is available
-   python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
-   
-   # Check GPU name
-   python -c "import torch; print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
-   ```
-
-5. **Run the application**
+4. **Run the application**
    ```bash
    python gui_classic_production.py
    ```
@@ -346,22 +174,6 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 1. Click **"Select IC Image"** and choose a clear photo of an IC chip
 2. Click **"Authenticate IC"** to start analysis
 3. View comprehensive results including:
-   - ✅ Authenticity verdict (Authentic/Counterfeit)
-   - ✅ Confidence score (0-100%)
-   - ✅ Part number identification
-   - ✅ Manufacturer and date codes
-   - ✅ Datasheet verification
-   - ✅ Detailed marking validation
-
-### Image Guidelines
-
-For best results:
-- ✅ **Clear, focused images**
-- ✅ **Even lighting** without glare
-- ✅ **High resolution** (1000px+ recommended)
-- ✅ **Direct overhead angle**
-- ❌ Avoid blurry, shadowed, or low-resolution images
-
 ---
 
 ## �️ User Interface Guide
@@ -422,7 +234,7 @@ The IC Authenticator provides a comprehensive, professional interface with multi
 - **Date Code**: Manufacturing date code when present
 - **Confidence Score**: Overall authentication confidence (e.g., 75%)
 - **OCR Confidence**: Quality score for text extraction (e.g., 36.9%)
-- **Datasheet Status**: ✅ Found with verified manufacturer source
+- **Datasheet Status**: Found with verified manufacturer source
 
 **Scoring Breakdown:**
 The system uses a 100-point scale with penalties for issues:
@@ -456,7 +268,7 @@ The system uses a 100-point scale with penalties for issues:
 
 ![Datashhet](README_imgs/image-1760146370334.png)
 1. **Datasheet Information**
-   - Datasheet verification status (✅ Datasheet Found)
+   - Datasheet verification status
    - Source: Local Cache or manufacturer website
    - Manufacturer URL: Direct link to official datasheet PDF
    - Local PDF path showing cached location
@@ -468,21 +280,6 @@ The system uses a 100-point scale with penalties for issues:
 ![Debug Images](README_imgs/image-1760146387684.png)
 
 **Purpose**: Visualizes the OCR text detection process with bounding boxes
-
-**What You See:**
-- Original image with **yellow bounding boxes** around detected text regions
-- Each detected text element is highlighted individually with confidence scores
-- Shows exactly what text the OCR system found and where (e.g., "ATMEL (0.39)", "AT MEGA328P (0.29)", "20AU (0.20723)")
-- Memory-optimized display (v7.0.17 - loads from disk, not memory)
-- Preprocessing variants shown below the main detection image
-
-**Example Analysis:**
-In the image above (IC: LT1211, LT1013, ACN8):
-- Three distinct text regions detected
-- "LT1211" - Part number (top line)
-- "LT1013" - Additional marking (middle line)
-- "ACN8" - Date/lot code (bottom line)
-
 **Use Cases:**
 - Verifying that all text on the IC was detected
 - Diagnosing why certain markings weren't extracted
@@ -516,21 +313,6 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 **Purpose**: Process multiple IC images simultaneously and view aggregate results
 
-**Key Features:**
-- **Summary Statistics**: 
-  - Total images processed (e.g., "Successfully processed 12 images!")
-  - Authentication breakdown: 7 Authentic | 1 Counterfeit | 0 Errors
-- **Results Table**: Shows all processed images with:
-  - ✓ (green checkmark) or ✗ (red X) verdict indicator
-  - Filename
-  - Verdict (AUTHENTIC/LIKELY AUT.../LIKELY CO...)
-  - Confidence percentage
-  - Part Number identified
-  - Datasheet status (✅ Found)
-  - "View" button to see detailed results for each image
-- **Dynamic Column Sizing**: Text no longer truncated (v7.0.17 fix)
-- **Counterfeit Reasons**: Detailed explanations for each result (v7.0.17)
-
 **Workflow:**
 1. Click **"Batch Process"** button
 2. Select multiple IC images (Ctrl+Click or Shift+Click)
@@ -538,13 +320,6 @@ In the image above (IC: LT1211, LT1013, ACN8):
 4. View aggregate results in the summary table
 5. Click "View" on any row to see detailed analysis with counterfeit reasons
 6. Export results using **"Save Report"** or **"Export All Debug Data"**
-
-**Example Results:**
-- 2-Figure2-1.png: ✓ AUTHENTIC (100%) - AUCH16244X
-- 51c1ee09ce395f421f000000.png: ✓ AUTHENTIC (82%) - PIC18F45K22
-- 51c206efce395f0f0d000003.png: ✓ AUTHENTIC (100%) - M74HC238B1
-- 602-00015.png: LIKELY AUT... (75%) - LM358N
-- Screenshot 2025-10-06 222749.p...: ✗ LIKELY CO... (0%) - CY8C29666 (Counterfeit detected)
 
 ---
 
@@ -554,26 +329,11 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 **Purpose**: Detailed view of a single IC from batch processing (LM358N example - 75% confidence)
 
-**Summary Tab Shows:**
-- Authentication verdict with confidence (✅ LIKELY AUTHENTIC - Confidence: 75%)
-- Filename: 602-00015.png
-- Part Number: LM358N
-- Manufacturer: Texas Instruments
-- Date Codes: None detected
-- Confidence: 75%
-- Datasheet: Link to Texas Instruments official datasheet
-
 **Navigation:**
 - **Summary**: Quick overview (shown above)
 - **Details**: Full marking validation and datasheet info
 - **Debug Images**: Text detection visualization
 - **Raw Data**: Complete JSON output
-
-**Benefits:**
-- Review individual results without re-running analysis
-- Compare authentic vs counterfeit examples side-by-side
-- Export specific results for reporting
-- Verify OCR accuracy for quality control
 
 ---
 
@@ -605,19 +365,6 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 **Purpose**: See the actual preprocessing results that fed into the OCR engine - showing batch processing completion
 
-**What You See:**
-- Batch processing completion dialog with datasheet viewer
-- PDF Viewer showing MC33772C datasheet (Battery cell controller IC)
-- Multiple processed images listed in background table
-- Success statistics (7 authentic, 1 likely authentic, 0 suspicious, 1 counterfeit, 0 errors)
-
-**Analysis Example:**
-- Batch processing results showing mixed authentication outcomes
-- Datasheet viewer integrated into the workflow
-- MC33772C datasheet displayed with product information
-- General description and features visible in PDF viewer
-
-**Practical Use:**
 - Monitor batch processing completion
 - Access datasheets immediately after authentication
 - Review processed images and their results
@@ -653,37 +400,10 @@ In the image above (IC: LT1211, LT1013, ACN8):
 
 **Purpose**: Demonstrates how the system detects counterfeit indicators
 
-**Example Shown: CY8C29666 (0% Confidence - Counterfeit Detected)**
-- **Manufacturer**: Infineon
-- **Validation Status**: ✗ LIKELY COUNTERFEIT
-- **Confidence**: 0%
-
-**Datasheet Verification:**
-- Status: ✅ Datasheet Found (part exists, validating authenticity is crucial)
-- Source: Infineon official website
-- URL: Direct link to CY8C29466 automotive datasheet PDF
-
-**Authentication Details:**
-- Part number verified against official datasheet
-- Official datasheet found and validated
-- Source: Infineon (official manufacturer)
-
-**Counterfeit Indicators:**
-- Confidence score: 0% (critical - definite counterfeit)
-- Part number mismatch or suspicious markings detected
-- Failed validation checks despite datasheet availability
-- Red banner warning: ✗ LIKELY COUNTERFEIT
-
-**Authentication Score Impact:**
-- Valid manufacturer: +40 points
-- Official datasheet: +30 points
-- OCR quality: +13 points
-- **Invalid date code**: -10 points (penalty)
-- **Result**: COUNTERFEIT/SUSPICIOUS verdict
 
 ---
 
-## �📘 Usage
+## 📘 Usage
 
 ### GUI Interface
 
@@ -1083,14 +803,6 @@ Where Text Quality considers:
 └────────────────────────────────────────────────────────────┘
 ```
 
-### Supported IC Types
-
-- ✅ **Microcontrollers** - ATMEGA, STM32, PIC, etc.
-- ✅ **Logic ICs** - SN74 series, 4000 series
-- ✅ **ADCs/DACs** - ADC0831, DAC0800, etc.
-- ✅ **Memory chips** - 24C, 25C series
-- ✅ **Processors** - Cypress, Infineon, etc.
-
 ---
 
 ## 🏗️ System Architecture
@@ -1296,13 +1008,13 @@ Edit `config.json` to customize behavior:
 ```
 
 **What the script does:**
-1. ✅ Checks prerequisites (Python, PyInstaller, Inno Setup)
-2. ✅ Cleans previous builds
-3. ✅ Creates launcher executable (`ICAuthenticator.exe`)
-4. ✅ Builds installer with Inno Setup
-5. ✅ Packages all application files
-6. ✅ Creates uninstaller
-7. ✅ Verifies output
+1. Checks prerequisites (Python, PyInstaller, Inno Setup)
+2. Cleans previous builds
+3. Creates launcher executable (`ICAuthenticator.exe`)
+4. Builds installer with Inno Setup
+5. Packages all application files
+6. Creates uninstaller
+7. Verifies output
 
 **Output:**
 ```
@@ -1571,14 +1283,14 @@ For issues or questions:
 ## 📜 Version History
 
 ### v7.0.17 (January 2025) - CRITICAL MEMORY FIX ⚠️
-- ✅ **Fixed critical memory leak**: 3GB+ → 15MB per image (99.5% reduction)
-- ✅ Disk-based debug image storage using tempfile module
-- ✅ Smart signal management (file paths only, not numpy arrays)
-- ✅ Dynamic table column sizing (no text cutoff)
-- ✅ Counterfeit reasons in batch results
-- ✅ Periodic memory cleanup (QTimer every 30s)
-- ✅ UI responsiveness improvements (processEvents integration)
-- ✅ Indefinite stability (no more freezing after 2-3 minutes)
+- **Fixed critical memory leak**: 3GB+ → 15MB per image (99.5% reduction)
+- Disk-based debug image storage using tempfile module
+- Smart signal management (file paths only, not numpy arrays)
+- Dynamic table column sizing (no text cutoff)
+- Counterfeit reasons in batch results
+- Periodic memory cleanup (QTimer every 30s)
+- UI responsiveness improvements (processEvents integration)
+- Indefinite stability (no more freezing after 2-3 minutes)
 
 ### v7.0.16 (January 2025)
 - Added dynamic table columns
