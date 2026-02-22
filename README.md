@@ -176,7 +176,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 3. View comprehensive results including:
 ---
 
-## �️ User Interface Guide
+## User Interface Guide
 
 The IC Authenticator provides a comprehensive, professional interface with multiple tabs and visualization options. Below is a detailed walkthrough of each interface component.
 
