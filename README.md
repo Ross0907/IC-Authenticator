@@ -1,4 +1,4 @@
-# IC Authenticator - Production System v7.0.17
+# IC Authenticator - v7.0.17
 
 <div align="center">
 
